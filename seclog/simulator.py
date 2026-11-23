@@ -37,6 +37,8 @@ ATTACKS = {
     "port_scan": ("Port scan", "Knocks on 40 network ports to find open doors."),
     "new_admin": ("Backdoor account", "Creates a new user and gives it admin rights."),
     "data_theft": ("Quiet data theft", "Downloads 150 invoices quickly. No known pattern matches this, so only the AI can catch it."),
+    "sneaky_theft": ("Sneaky data theft", "Takes 72 invoices slowly, under the radar. The AI misses it until you teach it: "
+                                          "mark a Quiet data theft alert as a real threat, then launch this again."),
 }
 
 
@@ -76,7 +78,7 @@ class Simulator:
     def _normal(self, t):
         r = self.r
         x = r.random()
-        if x < 0.70:  # a website visit
+        if x < 0.78:  # a website visit
             ip = r.choice(self.visitors)
             page = r.choice(PAGES)
             st = 200 if r.random() > 0.015 else 404
@@ -84,12 +86,12 @@ class Simulator:
             if r.random() < 0.5:
                 lines.append(self._web(t, ip, r.choice(STATIC), 200 if r.random() > 0.5 else 304, r.choice(UAS)))
             return lines
-        if x < 0.80:  # internet background noise at the firewall
+        if x < 0.88:  # internet background noise at the firewall
             return [self._fw(t, _bad_ip(r), r.choice([23, 445, 3389, 22, 1433, 5900]))]
-        if x < 0.92:  # staff using SSH
+        if x < 0.92:  # staff using SSH (a few logins a minute, the odd typo)
             u, ip = r.choice(list(STAFF.items()))
             pid = r.randint(2000, 30000)
-            if r.random() < 0.08:  # a typo, then success
+            if r.random() < 0.05:  # a typo, then success
                 return [self._sys(t, "web-server", "sshd", f"Failed password for {u} from {ip} port {r.randint(40000, 60000)} ssh2", pid),
                         self._sys(t, "web-server", "sshd", f"Accepted password for {u} from {ip} port {r.randint(40000, 60000)} ssh2", pid)]
             return [self._sys(t, "web-server", "sshd", f"Accepted publickey for {u} from {ip} port {r.randint(40000, 60000)} ssh2: RSA SHA256:{uuid.uuid4().hex[:20]}", pid),
@@ -150,6 +152,10 @@ class Simulator:
             steps += [(0.0, lambda t: self._sys(t, "web-server", "useradd", "new user: name=sysupdate, UID=1010, GID=1010, home=/home/sysupdate, shell=/bin/bash")),
                       (1.5, lambda t: self._sys(t, "web-server", "usermod", "add 'sysupdate' to group 'sudo'")),
                       (2.0, lambda t: self._sys(t, "web-server", "sshd", f"Accepted password for sysupdate from {ip} port {r.randint(30000, 60000)} ssh2", pid))]
+        elif kind == "sneaky_theft":
+            ua = r.choice(UAS)
+            for i in range(72):  # about 25 invoices every 30 seconds, for 85 seconds
+                steps.append((i * 1.2, lambda t, i=i: self._web(t, ip, f"/invoices/INV-{31000 + i}.pdf", 200, ua)))
         elif kind == "data_theft":
             ua = r.choice(UAS)
             for i in range(150):

@@ -172,3 +172,35 @@ body[data-area="monitor"] .only-research, body[data-area="research"] .only-monit
 .sound-btn[aria-pressed="true"] .wave { display: inline; }
 .sound-btn[aria-pressed="true"] .mute { display: none; }
 .sound-btn[aria-pressed="true"] { border-color: var(--moss); color: var(--moss); }
+
+/* ---------- review bar ---------- */
+.reviewbar { display: flex; align-items: center; gap: 12px; margin: 14px 40px 0; padding: 11px 18px; border-radius: 14px; background: var(--flare-soft); color: #6d1c11; text-decoration: none; font-size: 15px; border: 1px solid #f3c2b9; }
+.reviewbar b { margin-left: auto; background: var(--flare); color: #fff; padding: 5px 14px; border-radius: 10px; font-size: 14px; }
+.reviewbar:hover b { background: #a8321f; }
+@media (max-width: 860px) { .reviewbar { margin: 10px 16px 0; } }
+
+/* ---------- AI learning page ---------- */
+.ways { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 22px 0; }
+.ways .panel { display: grid; gap: 6px; align-content: start; }
+.ways .when { font-size: 13px; font-weight: 600; color: var(--harbor); }
+.impact { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 22px; }
+.impact div { background: var(--paper); border: 1px solid var(--rule); border-radius: 16px; padding: 14px 16px; }
+.impact b { display: block; font-size: 30px; color: var(--ink); line-height: 1.15; font-variant-numeric: tabular-nums; }
+.impact span { font-size: 13.5px; color: var(--slate); }
+.dials { display: grid; gap: 14px; margin-top: 12px; }
+.dial { display: grid; grid-template-columns: minmax(180px, 1fr) 2fr; gap: 16px; align-items: center; font-size: 15px; }
+.dial .track2 { position: relative; height: 12px; border-radius: 99px; background: linear-gradient(to right, #dbe6f4, #f6eccb 55%, #fbe4df); }
+.dial .track2 i { position: absolute; top: -5px; width: 22px; height: 22px; margin-left: -11px; border-radius: 50%; background: var(--ink); border: 3px solid #fff; box-shadow: 0 2px 6px rgba(11,31,58,.3); transition: left .6s; }
+.dial .track2 u { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--slate); opacity: .5; }
+.dial .ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--slate); margin-top: 6px; }
+.dial .moved { font-size: 12.5px; font-weight: 600; }
+.dial .moved.up { color: var(--flare); }
+.dial .moved.down { color: var(--moss); }
+.lessons { display: grid; gap: 8px; margin-top: 12px; }
+.lesson { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 10px 14px; border-radius: 12px; background: var(--paper); border: 1px solid var(--rule); font-size: 14.5px; }
+.lesson .chip { justify-self: start; }
+.learned-box { background: var(--moss-soft); border-radius: 14px; padding: 12px 16px; color: #1f5d40; margin-top: 12px; }
+.learned-box ul { margin: 6px 0 0; padding-left: 20px; }
+.chip.learned { background: var(--moss-soft); color: var(--moss); }
+@media (max-width: 1100px) { .ways { grid-template-columns: 1fr; } .impact { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px) { .dial { grid-template-columns: 1fr; } }

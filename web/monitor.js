@@ -76,6 +76,10 @@
       if (n.kind === "source_done") {
         const s = (M.state?.connections || []).find((c) => c.id === n.source);
         note(`Finished checking ${s ? s.name : "the file"}`, "Open Threats to see what was found.", "#/threats");
+      } else if (n.kind === "lesson") {
+        note(n.label === "real" ? "The AI learned from your answer" : "The AI will be calmer about this",
+             n.lessons.join(" "), "#/ai");
+        if (M.page === "ai") routes.ai($("#view"));
       } else if (n.kind === "learned") {
         note("The AI has learned what normal looks like", "From now on it flags anything unusual.");
       }
@@ -91,6 +95,9 @@
     badge.hidden = !s.open_alerts; badge.textContent = s.open_alerts > 99 ? "99+" : s.open_alerts;
     const live = (s.sources || []).filter((x) => x.alive && x.live).length;
     $("#monSource").innerHTML = `Watching <b>${live}</b> live connection${live === 1 ? "" : "s"}, ${fmt(s.rate)} lines a second`;
+    const bar = $("#reviewBar");
+    bar.hidden = !s.open_alerts || M.page === "threats";
+    $("#reviewText").textContent = `${fmt(s.open_alerts)} threat${s.open_alerts === 1 ? "" : "s"} waiting for you to review`;
     if (M.page === "monitor") updateHome();
   }
 
@@ -379,7 +386,7 @@
     box.innerHTML = list.slice(0, 400).map((a) => `
       <button class="item ${a.severity === "critical" || a.severity === "high" ? "first" : ""}" data-id="${a.id}" aria-current="${a.id === M.cur}">
         <b>${esc(a.title)}</b>
-        <span class="meta"><span>${esc(who(a.entity))}</span><span>${a.kind === "ai" ? "AI, " : ""}${SEV[a.severity]}</span></span>
+        <span class="meta"><span>${esc(who(a.entity))}</span><span>${a.learned ? "Learned, " : a.kind === "ai" ? "AI, " : ""}${SEV[a.severity]}</span></span>
         <span class="meta"><span>${esc(a.source_name || "")}, ${esc(clock(a.created))}${a.count > 1 ? `, ${a.count}×` : ""}</span>${a.status !== "new" ? `<span class="done">${lab[a.status]}</span>` : ""}</span>
       </button>`).join("") || `<div class="empty" style="margin:14px">No threats match. Clear a filter to see more.</div>`;
     $$("#titems .item").forEach((b) => b.addEventListener("click", () => openThreat(+b.dataset.id)));
@@ -396,6 +403,7 @@
         <div class="verdict" style="gap:8px">
           <span class="chip sev-${d.severity}">${SEV[d.severity]}</span>
           <span class="chip ${ai ? "ai" : "pattern"}">${ai ? "Spotted by the AI" : "Known attack pattern"}</span>
+          ${d.learned ? '<span class="chip learned">Learned from you</span>' : ""}
           ${techChip(d.mitre || "")}
         </div>
         <h2>${esc(d.title)}</h2>
@@ -418,11 +426,14 @@
       <div class="panel">
         <h3>What to do now</h3>
         <p style="margin:8px 0 0">${esc(d.advice || "")}</p>
-        <div class="actbar" style="margin-top:14px">
-          <button data-s="real" aria-pressed="${d.status === "real"}">It's a real threat</button>
+        <h3 style="margin-top:18px">Is it a real threat?</h3>
+        <p class="muted small" style="margin:4px 0 0">Your answer teaches the AI. Real threats make it more watchful of this kind of behaviour; false alarms make it calmer.</p>
+        <div class="actbar" style="margin-top:12px">
+          <button data-s="real" aria-pressed="${d.status === "real"}">Real threat</button>
           <button data-s="false" aria-pressed="${d.status === "false"}">False alarm</button>
           <button data-s="resolved" aria-pressed="${d.status === "resolved"}">Dealt with</button>
         </div>
+        <div id="learnedBox"></div>
       </div>
       <div class="logview">
         <div class="logview-head"><h3>The evidence: ${d.lines.length} log line${d.lines.length === 1 ? "" : "s"} from ${esc(who(d.entity))}</h3>
@@ -438,9 +449,14 @@
     $$("#tdetail [data-show]").forEach((b) => b.addEventListener("click", () => show(b.dataset.show)));
     $$("#tdetail [data-s]").forEach((b) => b.addEventListener("click", async () => {
       const s = b.dataset.s === d.status ? "new" : b.dataset.s;
-      await post(`/api/m/alerts/${id}/status`, { status: s });
+      const r = await post(`/api/m/alerts/${id}/status`, { status: s });
       const a = M.list.find((x) => x.id === id); if (a) a.status = s;
-      renderThreatList(); openThreat(id);
+      renderThreatList();
+      await openThreat(id);
+      if (r.lessons && r.lessons.length) {
+        $("#learnedBox").innerHTML = `<div class="learned-box"><b>The AI learned from this</b><ul>${r.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
+          <a href="#/ai" class="small">See everything it has learned</a></div>`;
+      }
     }));
   }
 
@@ -561,6 +577,77 @@
     });
   }
 
+  /* ================================================================ AI learning */
+  const WAYS = [
+    ["When a connection starts", "Learns what normal looks like", "It watches the first few minutes, or the first part of a file, and learns the usual amounts of logins, pages, errors and message types for each address or user."],
+    ["Every few minutes", "Keeps up as things change", "It re-learns normal from recent activity it judged safe, so a busier day or a new app doesn't turn into a flood of alerts."],
+    ["Every time you answer", "Learns from you", "Marking a threat real makes it more watchful of that behaviour. Marking a false alarm makes it calmer, and stops that exact alert coming back. Your answers are its reward signal."],
+  ];
+
+  routes.ai = async (view) => {
+    M.page = "ai";
+    const v = await api("/api/m/ai");
+    if (M.page !== "ai") return;
+    const st = v.stats;
+    const label = { real: "Real threat", false: "False alarm" };
+    view.innerHTML = `
+    <h1 style="font-size:36px">How the AI is learning</h1>
+    <p class="lead" style="margin-top:10px">The AI isn't fixed. It learns normal behaviour by itself, keeps re-learning as things change, and gets better from your answers on the Threats page.</p>
+    <div class="ways">${WAYS.map(([w, t, d]) => `<div class="panel"><span class="when">${w}</span><h3>${t}</h3><p class="muted small" style="margin:0">${d}</p></div>`).join("")}</div>
+    <div class="impact">
+      <div><b>${st.real + st.false}</b><span>answers you've given</span></div>
+      <div><b>${st.lessons}</b><span>lessons learned</span></div>
+      <div><b style="color:var(--moss)">${st.caught}</b><span>times it caught something only because you taught it</span></div>
+      <div><b>${st.avoided}</b><span>false alarms it avoided thanks to you</span></div>
+      <div><b>${v.connections.reduce((n, c) => n + c.retrains, 0)}</b><span>times it re-learned normal</span></div>
+    </div>
+    <section class="grid2">
+      <div class="panel">
+        <h3>How watchful it is right now</h3>
+        <p class="muted small" style="margin:4px 0 0">The grey tick is where it started. Your answers move the dot.</p>
+        <div class="dials">${v.features.map((f) => {
+          const moved = f.watch - f.default;
+          return `<div class="dial"><span>${esc(f.name[0].toUpperCase() + f.name.slice(1))}
+            ${Math.abs(moved) > 0.01 ? `<br><span class="moved ${moved > 0 ? "up" : "down"}">${moved > 0 ? "More watchful" : "Calmer"}</span>` : ""}
+            <span class="tech-only small muted" style="display:block">alert at ${f.ratio}× normal and +${f.margin}</span></span>
+            <div><div class="track2"><u style="left:${f.default * 100}%"></u><i style="left:${Math.max(0, Math.min(1, f.watch)) * 100}%"></i></div>
+            <div class="ends"><span>Calmer</span><span>More watchful</span></div></div></div>`;
+        }).join("")}</div>
+        <p class="tech-only small muted" style="margin-top:12px">Overall alert line shift: ${v.thr_shift > 0 ? "+" : ""}${v.thr_shift} (Isolation Forest score)</p>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <h3>What it learned from you</h3>
+          <div class="lessons">${v.lessons.map((l) => `<div class="lesson"><span class="chip ${l.label === "real" ? "first" : "ok"}">${label[l.label]}</span>
+            <span>${esc(l.text)}</span><a class="small" href="#/threats/${l.alert_id}">the alert</a></div>`).join("")
+            || `<div class="empty">Nothing yet. Open a threat and tell it whether it was real. <a href="#/threats">Go to threats</a></div>`}</div>
+        </div>
+        <div class="panel">
+          <h3>Caught because you taught it</h3>
+          <div class="threat-cards" style="margin-top:12px">${v.learned_alerts.map((a) => `<a class="tcard" href="#/threats/${a.id}"><span class="sev ${a.severity}"></span>
+            <span><b>${esc(a.title)}</b><small>${esc(who(a.entity))}, ${esc(a.source_name || "")}</small></span><small>${esc(clock(a.created))}</small></a>`).join("")
+            || `<div class="empty">Try it in the attack lab: launch Sneaky data theft (it gets through), mark a Quiet data theft alert as real, then launch Sneaky data theft again.</div>`}</div>
+        </div>
+      </div>
+    </section>
+    <section class="panel" style="margin-top:22px">
+      <h3>The AI on each connection</h3>
+      <div class="lessons">${v.connections.map((c) => `<div class="lesson"><span class="dot ${c.alive ? "running" : ""}" style="width:10px;height:10px;border-radius:50%;background:${c.alive ? "var(--moss)" : "#b9c6d4"}"></span>
+        <span><b>${esc(c.name)}</b>: ${c.learning ? `learning normal, ${Math.round(c.progress * 100)}% done` : `learned from ${fmt(c.trained_on)} windows of activity, re-learned ${c.retrains} time${c.retrains === 1 ? "" : "s"}`}
+        <span class="tech-only small muted">alert line ${c.threshold ?? "–"}</span></span><span></span></div>`).join("") || `<div class="empty">No connections yet.</div>`}</div>
+      ${v.muted.length ? `<h3 style="margin-top:18px">Alerts you said were false alarms</h3><p class="muted small" style="margin:4px 0 0">These won't be raised again for the same address.</p>
+        <ul class="next-list">${v.muted.map(([r, e]) => `<li>${esc(r.replace("_", " "))} from ${esc(who(e))}</li>`).join("")}</ul>` : ""}
+      <div class="actions" style="margin-top:18px"><button class="btn small ghost" id="forget">Make it forget everything it learned from you</button></div>
+    </section>`;
+    const f = $("#forget");
+    f.addEventListener("click", async () => {
+      if (f.dataset.sure !== "1") { f.dataset.sure = "1"; f.textContent = "Click again to forget all lessons"; return; }
+      await post("/api/m/ai/reset");
+      note("The AI forgot its lessons", "It's back to how it started. What it learned about normal activity stays.");
+      routes.ai(view);
+    });
+  };
+
   /* ================================================================ 4. attack lab */
   const ATK_ICON = { brute_force: "🔑", break_in: "🚪", password_spray: "🌧️", sql_injection: "💉", web_scan: "🔦", port_scan: "📡", new_admin: "👤", data_theft: "📦" };
 
@@ -591,6 +678,7 @@
     <div class="attacks">${lab.catalog.map((c) => `
       <div class="attack" data-kind="${c.kind}">
         ${c.kind === "data_theft" ? '<span class="chip ai ai-tag">Only the AI can catch this</span>' : ""}
+        ${c.kind === "sneaky_theft" ? '<span class="chip learned ai-tag">Teach the AI first</span>' : ""}
         <span style="font-size:28px" aria-hidden="true">${ATK_ICON[c.kind] || "⚡"}</span>
         <h3>${esc(c.name)}</h3><p>${esc(c.text)}</p>
         <div class="state" data-state="${c.kind}"></div>

@@ -19,6 +19,11 @@ It takes security logs from anywhere, watches them live or checks them offline, 
 * **Finds threats two ways:**
   * **AI:** an Isolation Forest learns what normal looks like for each address or user over 30-second windows, then flags anything unusual.
   * **Known attack patterns:** 15 patterns, including password guessing, password spraying, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
+* **Learns and adapts** in three ways:
+  * It learns normal behaviour when a connection starts.
+  * It re-learns normal every few minutes, so it keeps up as things change.
+  * It learns from your answers. "Real threat" makes it more watchful of that behaviour; "False alarm" makes it calmer and stops that exact alert coming back. This is a small reinforcement loop: the sensitivities are the policy and your answers are the reward.
+  * The lessons are saved and shared across all connections. The **AI learning** page shows what changed. In the attack lab, "Sneaky data theft" gets through until you confirm a "Quiet data theft" as real; after that the AI catches it.
 * **Screens:** a radar of who's active, a live threat level, pop-up alerts, a threats inbox with evidence and advice, and buttons to mark each alert as real or a false alarm.
 * **Attack lab:** a pretend network with 8 attacks to launch, timed to show how fast each one is caught. "Quiet data theft" matches no known pattern, so only the AI can catch it.
 
@@ -99,7 +104,7 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
 * A second dataset (BGL), and comparing against published results
 * A deep sequence model (for example LSTM)
 * Deeper per-alert explanations (SHAP)
-* Learning from the saved reviews to improve over time (the reviews are already stored in the `feedback` table)
+* A supervised model trained on many confirmed threats, building on today's feedback loop
 
 ## Project layout
 
@@ -115,11 +120,12 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
     seclog/formats.py    reads many log formats into one shape
     seclog/rules.py      15 known attack patterns (MITRE ATT&CK)
     seclog/ai.py         live AI: per-address windows, Isolation Forest, plain reasons
+    seclog/learning.py   learning from people's answers (feedback loop)
     seclog/sources.py    connections: file, folder, web address, syslog, Windows events, attack lab
     seclog/simulator.py  the attack lab
     seclog/monitor.py    the live engine and its SQLite store
     web/monitor.js       live monitor screens
-    tests/               18 tests (python -m pytest)
+    tests/               20 tests (python -m pytest)
 
 ## Credits
 

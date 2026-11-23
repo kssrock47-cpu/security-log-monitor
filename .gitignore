@@ -8,3 +8,5 @@ data/monitor.db
 data/uploads/
 data/*.building
 data/full_run.*
+data/monitor.db-wal
+data/monitor.db-shm

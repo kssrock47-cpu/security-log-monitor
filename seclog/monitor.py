@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 from . import formats
 from .ai import WindowAI
+from .learning import Learner
 from .parse import make_miner
 from .rules import RuleEngine
 from .sources import KINDS
@@ -30,7 +31,9 @@ CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, ts TEXT, source_id IN
 CREATE INDEX IF NOT EXISTS ev_entity ON events(source_id, entity, ts);
 CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY, created TEXT, first_ts TEXT, last_ts TEXT, source_id INTEGER,
     entity TEXT, kind TEXT, rule TEXT, severity TEXT, title TEXT, detail TEXT, why TEXT, advice TEXT, mitre TEXT,
-    score REAL, threshold REAL, count INTEGER, status TEXT);
+    score REAL, threshold REAL, count INTEGER, status TEXT, features TEXT, learned INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS lessons (id INTEGER PRIMARY KEY, created TEXT, alert_id INTEGER, label TEXT, text TEXT);
+CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY, template TEXT);
 """
 
@@ -73,7 +76,18 @@ class Monitor:
         self.db_path, self.upload_dir = db_path, upload_dir
         os.makedirs(upload_dir, exist_ok=True)
         self.con = sqlite3.connect(db_path, check_same_thread=False)
+        # WAL + normal sync: safe, and much faster on Windows where every commit otherwise waits for the disk
+        self.con.execute("PRAGMA journal_mode=WAL")
+        self.con.execute("PRAGMA synchronous=NORMAL")
         self.con.executescript(SCHEMA)
+        for col in ("features TEXT", "learned INTEGER DEFAULT 0"):  # older databases
+            try:
+                self.con.execute(f"alter table alerts add column {col}")
+            except sqlite3.OperationalError:
+                pass
+        row = self.con.execute("select value from memory where key='learner'").fetchone()
+        self.learner = Learner(json.loads(row[0]) if row else None)
+        self._learner_saved = self.learner.dump()
         self.dbl = threading.Lock()
         self.q: queue.Queue = queue.Queue(maxsize=20000)
         self.sources: dict = {}
@@ -139,7 +153,7 @@ class Monitor:
     def _start(self, sid, kind, name, config):
         src = KINDS[kind](sid, name, config, self._sink)
         self.sources[sid] = src
-        self.ai[sid] = WindowAI(window_secs=30, learn_windows=60 if kind == "upload" else 120)
+        self.ai[sid] = WindowAI(window_secs=30, learn_windows=60 if kind == "upload" else 120, learner=self.learner)
         self.rules[sid] = RuleEngine()
         self.flushed.discard(sid)
         src.start()
@@ -235,6 +249,10 @@ class Monitor:
     # ---------------------------------------------------------------- alerts
     def _rule_alert(self, sid, hit, ev):
         ts = ev["ts"].isoformat(timespec="seconds")
+        if self.learner.muted(hit["rule"], hit["entity"]):
+            if not hit["update"]:
+                self.learner.count("avoided")  # a person said this one was a false alarm before
+            return
         if hit["update"]:
             row = self._rows("select id from alerts where source_id=? and entity=? and rule=? order by id desc limit 1",
                              (sid, hit["entity"], hit["rule"]))
@@ -243,7 +261,8 @@ class Monitor:
                 self._push("alert_update", {"id": row[0][0]})
             return
         self._new_alert(sid, hit["entity"], "pattern", hit["rule"], hit["severity"], hit["title"], hit["detail"], [],
-                        hit["advice"], hit["mitre"], None, None, ts, ts)
+                        hit["advice"], hit["mitre"], None, None, ts, ts,
+                        features=self.ai[sid].current_features(hit["entity"]))
 
     def _ai_alerts(self, sid, results):
         for r in results:
@@ -261,15 +280,23 @@ class Monitor:
             why = r["why"] or ["its overall mix of activity is very different from normal"]
             who = "This address" if formats.RE_IP.fullmatch(ent) else ("This user" if ent.startswith("user:") else "This machine")
             detail = f"{who}, in 30 seconds, " + "; ".join(why) + "."
-            self._new_alert(sid, ent, "ai", "unusual", sev, "Unusual behaviour the AI hasn't seen before", detail, why,
+            title = "Unusual behaviour the AI hasn't seen before"
+            if r.get("learned"):
+                title = "Looks like a threat you taught the AI about"
+                detail += " The AI only caught this because you confirmed a similar threat before."
+            self._new_alert(sid, ent, "ai", "learned" if r.get("learned") else "unusual", sev, title, detail, why,
                             "Look at what this address or user did. If it isn't expected, block it and check the affected accounts.",
-                            "Anomaly detection (Isolation Forest)", r["score"], r["threshold"], start, end)
+                            "Anomaly detection (Isolation Forest) + learning from feedback" if r.get("learned")
+                            else "Anomaly detection (Isolation Forest)", r["score"], r["threshold"], start, end,
+                            features=r.get("features"), learned=bool(r.get("learned")))
 
-    def _new_alert(self, sid, ent, kind, rule, sev, title, detail, why, advice, mitre, score, thr, first_ts, last_ts):
+    def _new_alert(self, sid, ent, kind, rule, sev, title, detail, why, advice, mitre, score, thr, first_ts, last_ts,
+                   features=None, learned=False):
         aid = self._exec("insert into alerts(created,first_ts,last_ts,source_id,entity,kind,rule,severity,title,detail,why,"
-                         "advice,mitre,score,threshold,count,status) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'new')",
+                         "advice,mitre,score,threshold,count,status,features,learned) "
+                         "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'new',?,?)",
                          (datetime.now().isoformat(timespec="seconds"), first_ts, last_ts, sid, ent, kind, rule, sev,
-                          title, detail, json.dumps(why), advice, mitre, score, thr))
+                          title, detail, json.dumps(why), advice, mitre, score, thr, json.dumps(features or []), int(learned)))
         e = self.entities.get(ent)
         if e:
             e["alerts"] += 1
@@ -315,6 +342,7 @@ class Monitor:
                 if time.time() - last > 1:
                     last = time.time()
                     self._push("stats", self.stats())
+                    self._save_learner()
             except Exception as e:
                 self._push("error", {"text": str(e)[:200]})
 
@@ -376,11 +404,11 @@ class Monitor:
 
     def alert_brief(self, aid):
         r = self._rows("select id, created, first_ts, last_ts, source_id, entity, kind, rule, severity, title, detail, "
-                       "count, status, mitre from alerts where id=?", (aid,))
+                       "count, status, mitre, learned from alerts where id=?", (aid,))
         if not r:
             return None
         k = ["id", "created", "first_ts", "last_ts", "source", "entity", "kind", "rule", "severity", "title", "detail",
-             "count", "status", "mitre"]
+             "count", "status", "mitre", "learned"]
         d = dict(zip(k, r[0]))
         s = self.sources.get(d["source"])
         d["source_name"] = s.name if s else self._one("select name from sources where id=?", (d["source"],))
@@ -417,9 +445,54 @@ class Monitor:
         return d
 
     def set_status(self, aid, status):
+        """Save a person's answer. 'real' and 'false' also teach the AI (learning.py)."""
         if status not in ("new", "real", "false", "resolved"):
             raise ValueError("status must be new, real, false or resolved")
+        r = self._rows("select status, kind, rule, entity, features, title from alerts where id=?", (aid,))
+        if not r:
+            raise KeyError(aid)
+        old, kind, rule, ent, feats, title = r[0]
         self._exec("update alerts set status=? where id=?", (status, aid))
+        lessons = []
+        if status in ("real", "false") and status != old:
+            lessons = self.learner.learn(status, kind, rule, ent, json.loads(feats or "[]"), title)
+            now = datetime.now().isoformat(timespec="seconds")
+            for t in lessons:
+                self._exec("insert into lessons(created, alert_id, label, text) values (?,?,?,?)", (now, aid, status, t))
+            self._save_learner(force=True)
+            if lessons:
+                self._push("lesson", {"alert": aid, "label": status, "lessons": lessons})
+        return lessons
+
+    def _save_learner(self, force=False):
+        d = self.learner.dump()
+        if force or d != self._learner_saved:
+            self._exec("insert or replace into memory values ('learner', ?)", (d,))
+            self._learner_saved = d
+
+    def ai_view(self):
+        """Everything the 'AI learning' page shows."""
+        conns = []
+        for sid, s in self.sources.items():
+            ai = self.ai.get(sid)
+            if not ai:
+                continue
+            conns.append({"id": sid, "name": s.name, "kind": s.kind, "alive": s.is_alive(), "learning": ai.learning,
+                          "progress": round(ai.progress, 2), "trained_on": ai.trained_on, "retrains": ai.retrains,
+                          "threshold": round(ai.threshold, 3) if ai.threshold else None,
+                          "windows_ok": len(ai.recent_ok)})
+        lessons = [dict(zip(["created", "alert_id", "label", "text"], r)) for r in
+                   self._rows("select created, alert_id, label, text from lessons order by id desc limit 60")]
+        learned = [self.alert_brief(r[0]) for r in self._rows("select id from alerts where learned=1 order by id desc limit 10")]
+        return {**self.learner.view(), "connections": conns, "lessons": lessons, "learned_alerts": learned}
+
+    def reset_learning(self):
+        self.learner.reset()
+        for ai in self.ai.values():
+            ai.learner = self.learner
+        self._exec("delete from lessons")
+        self._save_learner(force=True)
+
 
     def entity_list(self, minutes=15, top=60):
         cut = time.time() - minutes * 60

@@ -540,9 +540,22 @@ class Status(BaseModel):
 @app.post("/api/m/alerts/{aid}/status")
 def m_alert_status(aid: int, s: Status):
     try:
-        MON.set_status(aid, s.status)
+        lessons = MON.set_status(aid, s.status)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except KeyError:
+        raise HTTPException(404, "No such alert.")
+    return {"ok": True, "lessons": lessons}
+
+
+@app.get("/api/m/ai")
+def m_ai():
+    return MON.ai_view()
+
+
+@app.post("/api/m/ai/reset")
+def m_ai_reset():
+    MON.reset_learning()
     return {"ok": True}
 
 

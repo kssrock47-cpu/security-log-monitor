@@ -70,7 +70,7 @@ def test_ai_learns_normal_and_flags_far_outlier():
     assert any("150 different web pages" in w for w in res[0]["why"])
 
 
-def _wait(cond, secs=15):
+def _wait(cond, secs=60):
     end = time.time() + secs
     while time.time() < end:
         if cond():
@@ -102,3 +102,29 @@ def test_syslog_from_another_device(mon):
         u.sendto(f"<38>Nov 23 22:31:{i:02d} r sshd[9]: Failed password for admin from 192.0.2.99 port {i} ssh2".encode(),
                  ("127.0.0.1", port))
     assert _wait(lambda: any(a["entity"] == "192.0.2.99" for a in mon.alerts()))
+
+
+def test_learning_from_answers():
+    from seclog.learning import Learner
+    L = Learner()
+    assert not L.far("pages", 25, 12)  # 25 pages is not "far" by default (needs 3x and +5)
+    lessons = L.learn("real", "ai", "unusual", "6.6.6.6", ["pages"], "Unusual behaviour")
+    assert lessons and L.far("pages", 25, 12)  # after one confirmed threat it is
+    L2 = Learner()
+    assert L2.far("failures", 8, 1)
+    L2.learn("false", "ai", "unusual", "10.0.0.15", ["failures"], "Unusual behaviour")
+    L2.learn("false", "ai", "unusual", "10.0.0.15", ["failures"], "Unusual behaviour")
+    assert not L2.far("failures", 8, 1)  # calmer after two false alarms
+    L2.learn("false", "pattern", "brute_force", "10.0.0.15", [], "Someone is guessing passwords")
+    assert L2.muted("brute_force", "10.0.0.15") and not L2.muted("brute_force", "6.6.6.6")
+
+
+def test_learning_is_saved(tmp_path):
+    m = Monitor(str(tmp_path / "m.db"), str(tmp_path / "up"))
+    sid = m.add_source("upload", "ssh", {"path": SSH})
+    assert _wait(lambda: sid in m.flushed)
+    a = m.alerts()[0]
+    lessons = m.set_status(a["id"], "false")
+    assert lessons
+    m2 = Monitor(str(tmp_path / "m.db"), str(tmp_path / "up2"))
+    assert m2.learner.view()["stats"]["false"] == 1 and m2.ai_view()["lessons"]

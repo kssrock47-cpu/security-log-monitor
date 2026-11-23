@@ -44,8 +44,11 @@ class _Win:
 
 
 class WindowAI:
-    def __init__(self, window_secs=30, learn_windows=120, quantile=0.995, retrain_every=400):
+    def __init__(self, window_secs=30, learn_windows=120, quantile=0.995, retrain_every=400, learner=None):
         self.ws = window_secs
+        self.learner = learner  # shared lessons from people's answers (learning.py); None = defaults only
+        self.retrains = 0
+        self.trained_on = 0
         self.learn_n = learn_windows
         self.q = quantile
         self.retrain_every = retrain_every
@@ -117,19 +120,37 @@ class WindowAI:
             # windows that completed the learning set are not judged
             return out
         scores = -self.model.score_samples(X)
+        L = self.learner
         for (k, w), x, s in zip(items, X, scores):
             reasons = self._reasons(w)
+
             # Two learned checks must agree with common sense before an alert:
             #  1) far beyond the normal range of a number (Isolation Forest can't score past what it has seen)
             #  2) the forest finds the overall mix unusual AND at least one number is clearly above normal
-            far = [r for r in reasons if r[0] >= 3 and r[2] >= r[3] + 5]
-            mix = s > self.threshold and any(r[2] >= r[3] + 3 for r in reasons)
-            if not (far or mix):
+            # How far is "far" is adjusted by what people taught it (learning.py).
+            def decide(default):
+                if L is None:
+                    far = [r for r in reasons if r[0] >= 3 and r[2] >= r[3] + 5]
+                    mix = s > self.threshold and any(r[2] >= r[3] + 3 for r in reasons)
+                else:
+                    far = [r for r in reasons if L.far(r[4], r[2], r[3], default)]
+                    mix = s > self.threshold + L.thr_shift(default) and any(L.mix_ok(r[4], r[2], r[3], default) for r in reasons)
+                return bool(far or mix), bool(far)
+
+            flagged, far = decide(False)
+            base, _ = decide(True)
+            if L is not None and base and not flagged:
+                L.count("avoided")  # would have alerted, but people taught it this is normal
+            if not flagged:
                 self.recent_ok.append(x)
                 continue
+            learned = L is not None and not base
+            if learned:
+                L.count("caught")
             out.append({"entity": k[0], "start": datetime.fromtimestamp(k[1]), "score": float(s),
                         "threshold": float(self.threshold), "why": [r[1] for r in reasons[:3]], "ids": w.ids,
-                        "raw": w.raw(), "far": bool(far), "strength": max(r[0] for r in reasons)})
+                        "raw": w.raw(), "far": far, "strength": max([r[0] for r in reasons] or [1]),
+                        "features": [r[4] for r in reasons[:3]], "learned": learned})
         self.seen_since_train += len(items)
         if self.seen_since_train >= self.retrain_every and len(self.recent_ok) >= 50:
             keep = np.vstack(self.recent_ok[-3000:])
@@ -144,6 +165,9 @@ class WindowAI:
         # alert line: a little above the most unusual normal windows seen while learning
         self.threshold = float(np.quantile(s, self.q) + 0.02)
         self.model = m
+        self.trained_on = len(X)
+        if refresh:
+            self.retrains += 1
         if not refresh:
             raw = np.array([[r[a] for a in AGG] for r in self.train_raw], float)
             self.baseline = {a: (float(np.median(raw[:, i])), float(np.quantile(raw[:, i], 0.99)))
@@ -161,6 +185,14 @@ class WindowAI:
             v = r[a]
             if v > max(hi, 1) and v >= 2 * max(med, 0.5):
                 usual = "never" if hi == 0 else f"normally at most {int(round(hi))}"
-                out.append((v / max(hi, 1), AGG_TEXT[a].format(v=v) + f" ({usual})", v, hi))
+                out.append((v / max(hi, 1), AGG_TEXT[a].format(v=v) + f" ({usual})", v, hi, a))
         out.sort(key=lambda t: -t[0])
         return out
+
+    def current_features(self, ent):
+        """Which numbers are already above normal for this address or user right now (for teaching)."""
+        feats = []
+        for (e, _), w in self.open.items():
+            if e == ent:
+                feats += [r[4] for r in self._reasons(w)]
+        return list(dict.fromkeys(feats))[:3]
