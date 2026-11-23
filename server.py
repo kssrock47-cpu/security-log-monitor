@@ -1,0 +1,419 @@
+"""Web server for the Security Log Monitor.
+
+Run:  python server.py        (then open http://localhost:8600)
+"""
+import asyncio
+import json
+import os
+import sqlite3
+import threading
+import time
+import uuid
+import webbrowser
+from contextlib import closing
+from datetime import datetime
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from seclog import pipeline, plain
+from seclog.live import LiveEngine
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(HERE, "data", "seclog.db")
+DEMO_LOG = os.path.join(HERE, "data", "sample", "demo_hdfs_style.log")
+DEMO_LABELS = os.path.join(HERE, "data", "sample", "demo_labels.csv")
+PORT = int(os.environ.get("SECLOG_PORT", "8600"))
+
+app = FastAPI(title="Security Log Monitor")
+app.mount("/static", StaticFiles(directory=os.path.join(HERE, "web")), name="static")
+
+RUN = {"state": "idle", "message": "", "started": None}
+_cache: dict = {}
+
+
+# ---------------------------------------------------------------- helpers
+def q(sql, params=()):
+    with closing(sqlite3.connect(DB)) as con:
+        return pd.read_sql_query(sql, con, params=params)
+
+
+def execute(sql, params=()):
+    with closing(sqlite3.connect(DB)) as con:
+        con.execute(sql, params)
+        con.commit()
+
+
+def has_data():
+    try:
+        return os.path.exists(DB) and q("select count(*) n from template_stats")["n"][0] > 0
+    except Exception:
+        return False
+
+
+def meta():
+    return dict(q("select key, value from meta").values)
+
+
+def bundle():
+    """Everything that depends only on the current run, computed once."""
+    m = meta()
+    key = m.get("run_at")
+    if _cache.get("key") == key:
+        return _cache
+    _cache.clear()
+    templates = {int(k): v for k, v in q("select template_id, template from templates").values}
+    stats = q("select * from template_stats").set_index("template_id")
+    alerts = q("select a.block_id, a.model, a.score, a.flagged, b.first_ts, b.n_events, b.label, b.split "
+               "from alerts a join blocks b using (block_id)")
+    models = sorted(alerts["model"].unique())
+    fl = alerts[alerts.flagged == 1]
+    by = (fl.groupby("block_id").agg(detectors=("model", lambda s: sorted(set(s))), score=("score", "max"),
+                                     first_ts=("first_ts", "first"), n=("n_events", "first"),
+                                     label=("label", "first")).reset_index())
+    two = len(models) == 2
+    by["priority"] = by["detectors"].map(lambda d: "first" if (len(d) == 2 or not two) else "check")
+    # counts for all flagged blocks in one query -> stories
+    cnt = q("select e.block_id, e.template_id, count(*) n from log_events e join "
+            "(select distinct block_id from alerts where flagged=1) f using (block_id) "
+            "group by e.block_id, e.template_id")
+    stories = {}
+    for bid, g in cnt.groupby("block_id"):
+        stories[bid] = plain.story(g.set_index("template_id")["n"], stats, templates)
+    by["headline"] = by["block_id"].map(lambda b: stories[b]["headline"])
+    by["kind"] = by["block_id"].map(lambda b: kind_of(stories[b]))
+    by["rank"] = by["priority"].map({"first": 0, "check": 1})
+    by = by.sort_values(["rank", "score", "first_ts"], ascending=[True, False, True]).reset_index(drop=True)
+    _cache.update(key=key, meta=m, templates=templates, stats=stats, alerts=alerts, models=models,
+                  by=by, stories=stories)
+    return _cache
+
+
+def beads(story, cap_extra=4):
+    """Routine track: one bead per expected step. o=ok, m=missing, d=extra repeat, x=unusual event."""
+    out = []
+    for st in story["steps"]:
+        n, h = st["normal"], st["here"]
+        out += ["o"] * min(h, n) + ["m"] * max(n - h, 0) + ["d"] * max(h - n, 0)
+    for u in story["unusual"]:
+        out += ["x"] * min(u["times"], cap_extra)
+    return "".join(out)
+
+
+def kind_of(story):
+    if story["unusual"]:
+        return story["unusual"][0]["text"]
+    if any(s["status"] == "missing" for s in story["steps"]):
+        return "The task stopped before it finished"
+    return "Usual steps, unusual amounts"
+
+
+def nice(ts):
+    return datetime.fromisoformat(ts).strftime("%d %b %Y, %H:%M")
+
+
+# ---------------------------------------------------------------- pages
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(HERE, "web", "index.html"))
+
+
+# ---------------------------------------------------------------- run
+class RunReq(BaseModel):
+    mode: str = "demo"
+    log: str | None = None
+    labels: str | None = None
+    max_lines: int | None = None
+    contamination: float = 0.03
+
+
+def _do_run(req: RunReq):
+    try:
+        if req.mode == "demo":
+            pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, req.contamination, demo=True)
+        else:
+            if not req.log or not os.path.exists(req.log):
+                raise ValueError(f"Can't find the log file at {req.log!r}. Check the path.")
+            lab = req.labels if req.labels and os.path.exists(req.labels) else None
+            if req.labels and not lab:
+                raise ValueError(f"Can't find the labels file at {req.labels!r}.")
+            pipeline.run(req.log, DB, lab, req.max_lines or None, req.contamination, demo=False)
+        _cache.clear()
+        RUN.update(state="done", message="Check finished.")
+    except Exception as e:  # report in plain words
+        RUN.update(state="error", message=str(e))
+
+
+@app.post("/api/run")
+def start_run(req: RunReq):
+    if RUN["state"] == "running":
+        raise HTTPException(409, "A check is already running.")
+    os.makedirs(os.path.dirname(DB), exist_ok=True)
+    RUN.update(state="running", message="Reading the logs and training the detectors…", started=time.time())
+    threading.Thread(target=_do_run, args=(req,), daemon=True).start()
+    return RUN
+
+
+@app.get("/api/run/status")
+def run_status():
+    return {**RUN, "elapsed": round(time.time() - RUN["started"], 1) if RUN["started"] else 0}
+
+
+# ---------------------------------------------------------------- data
+@app.get("/api/state")
+def state():
+    if not has_data():
+        return {"has_data": False, "run": RUN}
+    m = meta()
+    return {"has_data": True, "run": RUN, "demo": m.get("demo") == "1", "source": m.get("source"),
+            "run_at": m.get("run_at"), "labelled": m.get("labelled") == "1"}
+
+
+@app.get("/api/overview")
+def overview():
+    b = bundle()
+    by = b["by"]
+    n_lines = int(q("select count(*) n from log_events")["n"][0])
+    n_blocks = int(q("select count(*) n from blocks")["n"][0])
+    # timeline: at most ~40 bars
+    t0 = pd.to_datetime(q("select min(first_ts) t from blocks")["t"][0])
+    t1 = pd.to_datetime(q("select max(first_ts) t from blocks")["t"][0])
+    span_min = max((t1 - t0).total_seconds() / 60, 1)
+    step = next(s for s in [5, 10, 15, 30, 60, 120, 240, 480, 1440, 10_000] if span_min / s <= 40)
+    t = by.copy()
+    t["bin"] = pd.to_datetime(t["first_ts"]).dt.floor(f"{step}min")
+    bins = pd.date_range(t0.floor(f"{step}min"), t1.floor(f"{step}min"), freq=f"{step}min")
+    piv = t.pivot_table(index="bin", columns="priority", values="block_id", aggfunc="count").reindex(bins).fillna(0)
+    timeline = [{"t": i.isoformat(), "first": int(r.get("first", 0)), "check": int(r.get("check", 0))}
+                for i, r in piv.iterrows()]
+    kinds = by.groupby("kind").size().sort_values(ascending=False)
+    fb = q("select verdict, count(*) n from feedback group by verdict")
+    # a slice of real log lines for the hero, with one alert inside it
+    hero = []
+    if len(by):
+        bid = by.iloc[0]["block_id"]
+        ln = int(q("select min(line_no) n from log_events where block_id=?", (bid,))["n"][0])
+        rows = q("select line_no, block_id, template_id, content from log_events "
+                 "where line_no between ? and ? order by line_no limit 60", (ln - 4, ln + 56))
+        hero = [{"raw": r.content[:200], "alert": r.block_id == bid,
+                 "plain": plain.friendly(b["templates"][int(r.template_id)])} for r in rows.itertuples()]
+    return {"n_lines": n_lines, "n_blocks": n_blocks, "n_alerts": int(len(by)),
+            "n_first": int((by.priority == "first").sum()), "n_check": int((by.priority == "check").sum()),
+            "n_kinds": len(b["templates"]), "detectors": b["models"], "bin_minutes": step,
+            "timeline": timeline, "kinds": [{"kind": k, "n": int(v)} for k, v in kinds.items()],
+            "reviewed": {r.verdict: int(r.n) for r in fb.itertuples()}, "hero": hero,
+            "first_alert": by.iloc[0]["block_id"] if len(by) else None,
+            "first_headline": by.iloc[0]["headline"] if len(by) else None,
+            "normal_example": normal_example(b),
+            "normal_track": "".join("o" * int(round(r.normal_median)) for _, r in
+                                    b["stats"][b["stats"].normal_share >= 0.95].sort_values("typical_pos").iterrows()),
+            "test_start": b["meta"].get("test_start"),
+            "n_train": int((q("select count(*) n from blocks where split='train'"))["n"][0])}
+
+
+def normal_example(b):
+    """A newer task that no detector flagged, to show what normal looks like."""
+    ok = b["alerts"][(b["alerts"].split == "test")].groupby("block_id")["flagged"].max()
+    ok = ok[ok == 0]
+    return ok.index[len(ok) // 2] if len(ok) else None
+
+
+@app.get("/api/alerts")
+def alert_list():
+    b = bundle()
+    fb = dict(q("select block_id, verdict from feedback").values)
+    st = b["stories"]
+    return [{"id": r.block_id, "headline": r.headline, "kind": r.kind, "priority": r.priority,
+             "track": beads(st[r.block_id]),
+             "detectors": r.detectors, "time": r.first_ts, "when": nice(r.first_ts), "lines": int(r.n),
+             "review": fb.get(r.block_id)} for r in b["by"].head(3000).itertuples()]
+
+
+@app.get("/api/alerts/{bid}")
+def alert_detail(bid: str):
+    b = bundle()
+    row = b["by"][b["by"].block_id == bid]
+    if row.empty:
+        raise HTTPException(404, "No alert with that id.")
+    r = row.iloc[0]
+    s = b["stories"][bid]
+    ev = q("select line_no, ts, level, template_id, content from log_events where block_id=? order by line_no",
+           (bid,))
+    m = b["meta"]
+    det = []
+    for _, a in b["alerts"][b["alerts"].block_id == bid].iterrows():
+        thr = float(m["if_threshold"]) if a.model == "Isolation Forest" else 0.5
+        det.append({"model": a.model, "score": round(float(a.score), 3), "threshold": round(thr, 3),
+                    "flagged": bool(a.flagged)})
+    fb = q("select verdict from feedback where block_id=?", (bid,))
+    return {"id": bid, "headline": s["headline"], "priority": r.priority, "detectors": r.detectors,
+            "when": nice(r.first_ts), "steps": s["steps"], "unusual": s["unusual"], "next": s["next_steps"],
+            "lines": [{"time": x.ts[11:], "level": x.level, "raw": x.content,
+                       "plain": plain.friendly(b["templates"][int(x.template_id)]),
+                       "unusual": int(x.template_id) in s["rare_ids"]} for x in ev.itertuples()],
+            "scores": det, "answer": r.label if isinstance(r.label, str) else None,
+            "track": beads(s), "normal_track": "".join("o" * st["normal"] for st in s["steps"]),
+            "review": fb["verdict"][0] if len(fb) else None}
+
+
+class Feedback(BaseModel):
+    block_id: str
+    verdict: str | None  # "real", "false", "unsure" or None to clear
+
+
+@app.post("/api/feedback")
+def feedback(f: Feedback):
+    if f.verdict is None:
+        execute("delete from feedback where block_id=?", (f.block_id,))
+    else:
+        if f.verdict not in {"real", "false", "unsure"}:
+            raise HTTPException(400, "verdict must be real, false or unsure")
+        execute("insert or replace into feedback values (?,?,?)",
+                (f.block_id, f.verdict, datetime.now().isoformat(timespec="seconds")))
+    return {"ok": True}
+
+
+@app.get("/api/accuracy")
+def accuracy():
+    b = bundle()
+    m = b["meta"]
+    runs = q("select * from model_runs")
+    out = {"labelled": m.get("labelled") == "1", "demo": m.get("demo") == "1", "detectors": []}
+    if not out["labelled"]:
+        return out
+    test = b["alerts"][b["alerts"].split == "test"]
+    for _, rr in runs.iterrows():
+        t = test[test.model == rr.model]
+        real = t[t.label == "Anomaly"]
+        out["detectors"].append({
+            "model": rr.model, "n_train": int(rr.n_train), "n_test": int(rr.n_test),
+            "real": int(len(real)), "caught": int(real.flagged.sum()), "raised": int(t.flagged.sum()),
+            "false_alarms": int(((t.label != "Anomaly") & (t.flagged == 1)).sum()),
+            "precision": rr.precision, "recall": rr.recall, "f1": rr.f1,
+            "dots": [int(v) for v in real.sort_values("first_ts").flagged.tolist()[:400]]})
+    return out
+
+
+@app.get("/api/walkthrough/{bid}")
+def walkthrough(bid: str):
+    """The same task followed through every stage of the pipeline."""
+    b = bundle()
+    m = b["meta"]
+    ev = q("select content, template_id from log_events where block_id=? order by line_no", (bid,))
+    if ev.empty:
+        raise HTTPException(404, "Unknown task.")
+    counts = ev.groupby("template_id").size()
+    stats = b["stats"]
+    vec = [{"id": int(t), "plain": plain.friendly(b["templates"][int(t)]), "here": int(counts.get(t, 0)),
+            "normal": round(float(stats.loc[t, "normal_median"]), 1)} for t in stats.index
+           if counts.get(t, 0) or stats.loc[t, "normal_median"] > 0]
+    det = []
+    for _, a in b["alerts"][b["alerts"].block_id == bid].iterrows():
+        thr = float(m["if_threshold"]) if a.model == "Isolation Forest" else 0.5
+        det.append({"model": a.model, "score": round(float(a.score), 3), "threshold": round(thr, 3),
+                    "flagged": bool(a.flagged)})
+    s = b["stories"].get(bid) or plain.story(counts, stats, b["templates"])
+    flagged = bid in b["stories"]
+    return {"id": bid, "flagged": flagged, "track": beads(s),
+            "normal_track": "".join("o" * st["normal"] for st in s["steps"]),
+            "raw": ev["content"].str.slice(0, 200).tolist()[:10],
+            "templates": [{"template": b["templates"][int(t)], "plain": plain.friendly(b["templates"][int(t)]),
+                           "n": int(n)} for t, n in counts.items()],
+            "vector": vec, "detectors": det,
+            "headline": s["headline"] if flagged else "Nothing unusual. This task followed the usual routine."}
+
+
+# ---------------------------------------------------------------- live mode
+LIVE: dict = {}
+
+
+@app.post("/api/live/start")
+def live_start(speed: float = 60):
+    m = meta()
+    sid = uuid.uuid4().hex[:8]
+    LIVE[sid] = {"speed": speed, "paused": False, "stop": False}
+    return {"sid": sid, "start": m.get("test_start")}
+
+
+class LiveCtl(BaseModel):
+    sid: str
+    speed: float | None = None
+    paused: bool | None = None
+    stop: bool | None = None
+
+
+@app.post("/api/live/control")
+def live_control(c: LiveCtl):
+    s = LIVE.get(c.sid)
+    if not s:
+        raise HTTPException(404, "No live session.")
+    for k in ("speed", "paused", "stop"):
+        v = getattr(c, k)
+        if v is not None:
+            s[k] = v
+    return s
+
+
+@app.get("/api/live/stream")
+async def live_stream(sid: str):
+    s = LIVE.get(sid)
+    if not s:
+        raise HTTPException(404, "No live session.")
+    m = meta()
+    eng = LiveEngine(pipeline.model_path(DB), m["log_path"], m["test_start"])
+
+    async def gen():
+        it = eng.events()
+        sim_prev = None
+        batch, last_flush = [], time.monotonic()
+        stats = {"lines": 0, "tasks": 0, "alerts": 0}
+        yield f"event: hello\ndata: {json.dumps({'start': m['test_start']})}\n\n"
+        for ev in it:
+            if s["stop"]:
+                break
+            while s["paused"] and not s["stop"]:
+                await asyncio.sleep(0.2)
+            ts = datetime.fromisoformat(ev["time"])
+            if ev["type"] == "line":
+                if sim_prev is not None and ts > sim_prev:
+                    wait = (ts - sim_prev).total_seconds() / max(s["speed"], 0.1)
+                    if batch and (time.monotonic() - last_flush > 0.12 or wait > 0.12):
+                        yield f"event: batch\ndata: {json.dumps({'events': batch, 'stats': stats, 'clock': ev['time']})}\n\n"
+                        batch, last_flush = [], time.monotonic()
+                    await asyncio.sleep(min(wait, 2.0))
+                sim_prev = ts if sim_prev is None or ts > sim_prev else sim_prev
+                stats["lines"] += 1
+            else:
+                stats["tasks"] += 1
+                stats["alerts"] += int(ev["flagged"])
+            batch.append(ev)
+            if len(batch) > 400:
+                yield f"event: batch\ndata: {json.dumps({'events': batch, 'stats': stats, 'clock': ev['time']})}\n\n"
+                batch, last_flush = [], time.monotonic()
+                await asyncio.sleep(0)
+        if batch:
+            yield f"event: batch\ndata: {json.dumps({'events': batch, 'stats': stats})}\n\n"
+        yield f"event: done\ndata: {json.dumps(stats)}\n\n"
+        LIVE.pop(sid, None)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def main():
+    import uvicorn
+    if not has_data():
+        print("First start: running the demo check once…")
+        pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, 0.03, demo=True)
+    url = f"http://localhost:{PORT}"
+    print(f"\n  Security Log Monitor is running at {url}\n  Close this window to stop it.\n")
+    if not os.environ.get("SECLOG_NO_BROWSER"):
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()
