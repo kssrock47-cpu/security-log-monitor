@@ -133,7 +133,7 @@ async function viewOverview(view) {
     <div class="panel">
       <h3>What kind of problems</h3>
       <p class="muted small" style="margin:4px 0 0">Grouped by the oddest thing in each task. Click one to filter.</p>
-      <ul class="kinds">${o.kinds.map((k) => `<li><button data-kind="${esc(k.kind)}"><span class="row"><span>${esc(k.kind)}</span><b>${k.n}</b></span>
+      <ul class="kinds">${o.kinds.slice(0, 8).map((k) => `<li><button data-kind="${esc(k.kind)}"><span class="row"><span>${esc(k.kind)}</span><b>${k.n}</b></span>
         <span class="bar"><span style="width:${(k.n / o.kinds[0].n) * 100}%"></span></span></button></li>`).join("")}</ul>
     </div>
   </section>
@@ -152,7 +152,7 @@ async function viewOverview(view) {
 }
 
 function drawTimeline(box, data, bin) {
-  const W = Math.max(box.clientWidth, 300), H = 200, pad = { l: 28, r: 6, t: 8, b: 30 };
+  const W = Math.max(box.clientWidth, 300), H = 200, pad = { l: 40, r: 6, t: 8, b: 30 };
   const max = Math.max(1, ...data.map((d) => d.first + d.check));
   const bw = (W - pad.l - pad.r) / data.length;
   const y = (v) => pad.t + (H - pad.t - pad.b) * (1 - v / max);
@@ -199,6 +199,7 @@ function filtered() {
 
 async function viewAlerts(view, id) {
   S.alerts = await api("/api/alerts");
+  if (!S.overview) S.overview = await api("/api/overview");
   if (!S.alerts.length) { view.innerHTML = `${demoNote()}<div class="empty"><h2>Nothing unusual found</h2><p>Every task followed the usual routine.</p></div>`; return; }
   view.innerHTML = `${demoNote()}
   <div class="inbox">
@@ -236,7 +237,10 @@ function renderList() {
   kf.innerHTML = tags.join(" ") + ` <button id="clearKf">Clear</button>`;
   if (tags.length) $("#clearKf").addEventListener("click", () => { f.kind = null; f.from = f.to = null; renderList(); });
   const done = S.alerts.filter((a) => a.review).length;
-  $("#countLine").textContent = `${list.length} alert${list.length === 1 ? "" : "s"} shown, ${done} of ${S.alerts.length} reviewed`;
+  const total = S.overview ? S.overview.n_alerts : S.alerts.length;
+  $("#countLine").textContent = (total > S.alerts.length
+    ? `The ${fmt(S.alerts.length)} most urgent of ${fmt(total)} alerts. `
+    : "") + `${fmt(list.length)} shown, ${fmt(done)} reviewed`;
   const lab = { real: "Real problem", false: "False alarm", unsure: "Not sure" };
   $("#items").innerHTML = list.slice(0, 600).map((a) => `
     <button class="item ${a.priority}" data-id="${esc(a.id)}" aria-current="${a.id === S.cur}">
@@ -358,7 +362,7 @@ async function viewLive(view) {
   view.innerHTML = `${demoNote()}
   <h1 style="font-size:36px">Watch it work live</h1>
   <p class="lead" style="margin-top:10px">This replays the newer part of the log as if the lines were arriving right now. The detectors learned only from the older part, the ${fmt(o.n_train)} tasks before ${esc(when(o.test_start))}, so everything you see here is new to them.</p>
-  <p class="muted small">Each line is sorted the moment it arrives. When a task goes quiet for a minute, the detectors check it and either let it pass or raise an alert. ${techChip("Server-sent events")} ${techChip("Drain3 match")} ${techChip("saved scikit-learn models")}</p>
+  <p class="muted small">Each line is sorted the moment it arrives. When a task has been quiet for ${o.live_wait_min === 1 ? "a minute" : `${o.live_wait_min} minutes`} of log time, the detectors check it and either let it pass or raise an alert.${o.live_wait_min > 1 ? " Real storage tasks can send their last messages several minutes late, so the monitor waits before judging." : ""} ${techChip("Server-sent events")} ${techChip("Drain3 match")} ${techChip("saved scikit-learn models")}</p>
   <div class="live-bar">
     <button class="btn primary" id="liveGo">Start</button>
     <button class="btn" id="livePause" disabled>Pause</button>
@@ -479,16 +483,16 @@ async function viewAccuracy(view) {
   const d0 = a.detectors[0];
   view.innerHTML = `${demoNote()}
   <h1 style="font-size:36px">How often it's right</h1>
-  <p class="lead" style="margin-top:10px">To be fair, the detectors learned from the older ${fmt(d0.n_train)} tasks and were then tested on the newer ${fmt(d0.n_test)}, the way a real monitor learns from yesterday and faces tomorrow. ${a.demo ? "On these easy made-up logs the numbers are high; real logs will be harder." : ""}</p>
+  <p class="lead" style="margin-top:10px">To be fair, the detectors learned from the older ${fmt(d0.n_train)} tasks and were then tested on the newer ${fmt(d0.n_test)}, the way a real monitor learns from yesterday and faces tomorrow. ${a.demo ? "On these easy made-up logs the numbers are high; real logs will be harder." : "These are real results on the HDFS_v1 dataset, checked against its official answer key."}</p>
   <div class="acc" style="margin-top:24px">
     ${a.detectors.map((d) => `
       <div class="panel">
         <div><h2>${esc(detName(d.model))}</h2><p class="muted small" style="margin:4px 0 0">${esc(DET[d.model] ? DET[d.model].plain : "")} ${techChip(d.model)}</p></div>
         <div><div class="big">${d.caught} of ${d.real}</div><span class="muted">real problems caught</span></div>
         <div class="dots" role="img" aria-label="${d.caught} caught, ${d.real - d.caught} missed, ${d.false_alarms} false alarms">
-          ${d.dots.map((v) => `<i class="${v ? "" : "missed"}"></i>`).join("")}${"<i class='fa'></i>".repeat(Math.min(d.false_alarms, 60))}
+          ${"<i></i>".repeat(d.dot_caught)}${"<i class='missed'></i>".repeat(d.dot_missed)}${"<i class='fa'></i>".repeat(d.dot_false)}
         </div>
-        <div class="legend" style="margin:0"><span><i style="background:var(--moss);border-radius:50%"></i>caught</span><span><i style="border:2px solid var(--flare);border-radius:50%"></i>missed</span><span><i style="background:var(--brass);width:3px"></i>false alarm</span></div>
+        <div class="legend" style="margin:0"><span><i style="background:var(--moss);border-radius:50%"></i>caught</span><span><i style="border:2px solid var(--flare);border-radius:50%"></i>missed</span><span><i style="background:var(--brass);width:3px"></i>false alarm</span>${d.unit > 1 ? `<span>Each mark stands for about ${d.unit} tasks.</span>` : ""}</div>
         <p style="margin:0">It raised <b>${d.raised}</b> alerts in this period, and <b>${d.false_alarms}</b> ${d.false_alarms === 1 ? "was a false alarm" : "were false alarms"}.</p>
         <table class="tech-table tech-only">
           <tr><td>Precision (alerts that were real)</td><td>${(d.precision ?? 0).toFixed(3)}</td></tr>

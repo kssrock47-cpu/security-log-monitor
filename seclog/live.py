@@ -26,7 +26,8 @@ class OpenTask:
 
 
 class LiveEngine:
-    def __init__(self, bundle_path: str, log_path: str, start_ts: str, idle_secs: int = 60):
+    def __init__(self, bundle_path: str, log_path: str, start_ts: str, idle_secs: int = 60,
+                 offset: int = 0, skip_blocks: set | None = None):
         b = joblib.load(bundle_path)
         self.tids = b["tids"]
         self.templates = b["templates"]
@@ -40,60 +41,86 @@ class LiveEngine:
         self.start = datetime.fromisoformat(start_ts)
         self.idle = idle_secs
         self.open: dict[str, OpenTask] = {}
-        self.started_before: set[str] = set()  # tasks already under way when replay starts: skip them
+        # tasks already under way when replay starts are skipped (they belong to the training part)
+        self.started_before: set[str] = set(skip_blocks or ())
+        self.offset = offset
+        self.rare = set(self.stats.index[self.stats["normal_share"] < 0.05])
+        self.closed: set[str] = set()
         self.col = {t: i for i, t in enumerate(self.tids)}
         self._cache: dict = {}
+        self.sweep = 10  # seconds of log time between checks
+        self._plain = {t: plain.friendly(txt) for t, txt in self.templates.items()}
+        self._last_sweep = None
 
     # ---- scoring -------------------------------------------------------
-    def _check(self, bid: str, task: OpenTask) -> dict:
-        x = np.zeros((1, len(self.tids)))
+    def _vector(self, task: OpenTask):
+        x = np.zeros(len(self.tids))
         for t, c in task.counts.items():
             if t in self.col:
-                x[0, self.col[t]] = c
-        x = np.log1p(x)
-        if_score, rf_p = self._score(x)
-        votes = []
-        if if_score > self.if_thr:
-            votes.append("Isolation Forest")
-        if rf_p is not None and rf_p >= 0.5:
-            votes.append("Random Forest")
-        if task.unknown and not votes:
-            votes.append("New message type")  # something the models have never seen
-        out = {"type": "task", "block": bid, "time": task.first_ts.isoformat(), "lines": task.n,
-               "flagged": bool(votes), "detectors": votes, "if_score": round(if_score, 3),
-               "rf_prob": None if rf_p is None else round(rf_p, 3)}
-        if votes:
-            st = plain.story(pd.Series(task.counts), self.stats, self.templates)
-            out["headline"] = st["headline"] if not task.unknown else st["headline"] + " New kinds of message appeared."
-            n_models = 1 + (self.rf_model is not None)
-            agreed = len([v for v in votes if v != "New message type"])
-            out["priority"] = "first" if (agreed == n_models and n_models == 2) or (n_models == 1 and agreed) else "check"
-        return out
+                x[self.col[t]] = c
+        return np.log1p(x)
 
-    def _score(self, x):
-        """Most tasks look identical, so remember scores per count pattern (big speed-up)."""
-        key = x.tobytes()
-        hit = self._cache.get(key)
-        if hit is None:
-            if_score = float(-self.if_model.score_samples(x)[0])
-            rf_p = None
+    def _score_many(self, X):
+        """Score many tasks in one call (per-call overhead dominates), reusing earlier results."""
+        keys = [row.tobytes() for row in X]
+        todo = [k for k in dict.fromkeys(keys) if k not in self._cache]
+        if todo:
+            idx = {k: i for i, k in enumerate(keys)}
+            Xn = X[[idx[k] for k in todo]]
+            if_s = -self.if_model.score_samples(Xn)
+            rf_p = [None] * len(todo)
             if self.rf_model is not None:
                 classes = list(self.rf_model.classes_)
-                rf_p = float(self.rf_model.predict_proba(x)[0, classes.index(1)]) if 1 in classes else 0.0
-            hit = self._cache[key] = (if_score, rf_p)
-            if len(self._cache) > 50_000:
+                rf_p = self.rf_model.predict_proba(Xn)[:, classes.index(1)] if 1 in classes else np.zeros(len(todo))
+            for k, a, b in zip(todo, if_s, rf_p):
+                self._cache[k] = (float(a), None if b is None else float(b))
+            if len(self._cache) > 200_000:
                 self._cache.clear()
-        return hit
+                for k, a, b in zip(todo, if_s, rf_p):
+                    self._cache[k] = (float(a), None if b is None else float(b))
+        return [self._cache[k] for k in keys]
+
+    def _check_many(self, items):
+        if not items:
+            return []
+        X = np.vstack([self._vector(t) for _, t in items])
+        out = []
+        for (bid, task), (if_score, rf_p) in zip(items, self._score_many(X)):
+            votes = []
+            if if_score > self.if_thr:
+                votes.append("Isolation Forest")
+            if rf_p is not None and rf_p >= 0.5:
+                votes.append("Random Forest")
+            if task.unknown and not votes:
+                votes.append("New message type")  # something the models have never seen
+            ev = {"type": "task", "block": bid, "time": task.first_ts.isoformat(), "lines": task.n,
+                  "flagged": bool(votes), "detectors": votes, "if_score": round(if_score, 3),
+                  "rf_prob": None if rf_p is None else round(rf_p, 3)}
+            if votes:
+                st = plain.story(pd.Series(task.counts, dtype=float), self.stats, self.templates)
+                ev["headline"] = st["headline"] + (" New kinds of message appeared." if task.unknown else "")
+                n_models = 1 + (self.rf_model is not None)
+                agreed = len([v for v in votes if v != "New message type"])
+                ev["priority"] = "first" if (n_models == 2 and agreed == 2) or (n_models == 1 and agreed) else "check"
+            out.append(ev)
+        return out
 
     def _close_idle(self, now: datetime):
+        """Every `sweep` seconds of log time, check all tasks that have gone quiet, in one batch."""
+        if self._last_sweep is not None and (now - self._last_sweep).total_seconds() < self.sweep:
+            return []
+        self._last_sweep = now
         done = [b for b, t in self.open.items() if (now - t.last_ts).total_seconds() > self.idle]
-        return [self._check(b, self.open.pop(b)) for b in done]
+        self.closed.update(done)  # a task is judged once, when it goes quiet
+        return self._check_many([(b, self.open.pop(b)) for b in done])
 
     # ---- replay ----------------------------------------------------------
     def events(self):
         """Yield ('line', dict) and ('task', dict) events in log-time order."""
-        with open(self.log_path, "r", errors="replace") as f:
-            for raw in f:
+        with open(self.log_path, "rb") as fb:
+            fb.seek(self.offset)  # jump close to where the newer part starts
+            for raw_b in fb:
+                raw = raw_b.decode("utf-8", "replace")
                 p = parse_line(raw)
                 if not p:
                     continue
@@ -103,7 +130,7 @@ class LiveEngine:
                 if ts < self.start:
                     self.started_before.update(blocks)
                     continue
-                blocks = [b for b in blocks if b not in self.started_before]
+                blocks = [b for b in blocks if b not in self.started_before and b not in self.closed]
                 if not blocks:
                     continue
                 for ev in self._close_idle(ts):
@@ -121,7 +148,7 @@ class LiveEngine:
                         task.counts[tid] = task.counts.get(tid, 0) + 1
                 known = tid is not None
                 yield {"type": "line", "time": ts_s, "level": level, "raw": raw.strip()[:220],
-                       "plain": plain.friendly(self.templates[tid]) if known else "A new kind of message",
-                       "problem": plain.is_problem(self.templates[tid]) if known else True, "block": blocks[0]}
-        for bid in list(self.open):
-            yield self._check(bid, self.open.pop(bid))
+                       "plain": self._plain.get(tid, "A new kind of message") if known else "A new kind of message",
+                       "problem": (tid in self.rare) if known else True, "block": blocks[0]}
+        for ev in self._check_many([(b, self.open.pop(b)) for b in list(self.open)]):
+            yield ev

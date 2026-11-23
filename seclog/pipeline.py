@@ -1,15 +1,20 @@
-"""Run the whole offline flow: parse -> store -> features -> two models -> alerts."""
+"""Run the whole offline flow: parse -> store -> features -> two models -> alerts.
+
+Memory-lean: raw lines are written to SQLite while reading, and only integer arrays stay
+in memory, so the full HDFS_v1 file (about 11 million lines) fits on a normal laptop.
+"""
 import argparse
+import json
 import os
-import sqlite3
-from contextlib import closing
+import time
+from datetime import datetime
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from . import features, models, store
-from .parse import parse_file
+from . import models, store
+from .parse import parse_to_db
 
 
 def load_labels(path: str | None):
@@ -28,90 +33,131 @@ def model_path(db_path: str) -> str:
     return os.path.splitext(db_path)[0] + ".models.joblib"
 
 
+def _say(progress, msg):
+    if progress:
+        progress(msg)
+
+
 def run(log_path: str, db_path: str, labels_path: str | None = None,
         max_lines: int | None = None, contamination: float = 0.03, train_frac: float = 0.7,
-        demo: bool = False) -> dict:
+        demo: bool = False, progress=None) -> dict:
+    t0 = time.time()
     labels = load_labels(labels_path)
-    events, templates, miner = parse_file(log_path, max_lines, return_miner=True)
-    if not events:
+    tmp_db = db_path + ".building"
+    if os.path.exists(tmp_db):
+        os.remove(tmp_db)
+    store.reset(tmp_db)  # build into a new file, so the dashboard keeps working until we're done
+    con = store.connect(tmp_db)
+    con.execute("PRAGMA journal_mode=OFF")
+    con.execute("PRAGMA synchronous=OFF")
+
+    _say(progress, "Reading the log and sorting lines into message types…")
+    P = parse_to_db(log_path, con, max_lines)
+    if len(P["block"]) == 0:
+        con.close()
         raise ValueError("No HDFS-format log lines with a block id were found.")
+    templates, tids = P["templates"], sorted(P["templates"])
+    nb, nt = len(P["block_ids"]), len(tids)
+    col = np.zeros(max(tids) + 1, dtype=np.int64)
+    col[tids] = np.arange(nt)
 
-    blocks = features.build_blocks(events, labels)
-    tids = sorted(templates)
-    counts = features.count_matrix(events, blocks, tids)
-    X = features.to_model_input(counts)
-    train_idx, test_idx = models.time_split(len(blocks), train_frac)
-    blocks["split"] = ["train" if i in set(train_idx.tolist()) else "test" for i in range(len(blocks))]
+    _say(progress, "Counting messages per storage task…")
+    first_unix = np.full(nb, np.iinfo(np.int64).max, dtype=np.int64)
+    np.minimum.at(first_unix, P["block"], P["ts"])
+    n_events = np.bincount(P["block"], minlength=nb)
+    counts_np = np.bincount(P["block"].astype(np.int64) * nt + col[P["tid"]], minlength=nb * nt).reshape(nb, nt)
 
-    labelled = labels is not None and blocks["label"].notna().all() and blocks["label"].nunique() > 1
-    y = (blocks["label"] == "Anomaly").astype(int).values if labelled else None
+    # oldest first: train on older blocks, test on newer ones
+    order = np.lexsort((np.arange(nb), first_unix))
+    block_ids = np.asarray(P["block_ids"], dtype=object)[order]
+    first_unix, n_events, counts_np = first_unix[order], n_events[order], counts_np[order]
+    counts = pd.DataFrame(counts_np, columns=tids)
+    X = np.log1p(counts_np.astype(np.float32))
+    train_idx, test_idx = models.time_split(nb, train_frac)
+    split = np.where(np.arange(nb) < len(train_idx), "train", "test")
 
+    lab = np.array([labels.get(b) if labels else None for b in block_ids], dtype=object)
+    labelled = labels is not None and all(l is not None for l in lab) and len(set(lab)) > 1
+    y = (lab == "Anomaly").astype(int) if labelled else None
+
+    _say(progress, "Training Detector A (Isolation Forest)…")
     results = {}
     if_score, if_flag, if_model, if_thr = models.run_isolation_forest(X, train_idx, contamination)
     results["Isolation Forest"] = (if_score, if_flag)
     rf_model = None
     if labelled and len(set(y[train_idx])) > 1:
+        _say(progress, "Training Detector B (Random Forest)…")
         rf_score, rf_flag, rf_model = models.run_random_forest(X, y, train_idx)
         results["Random Forest"] = (rf_score, rf_flag)
 
-    # "Normal" profile for explanations: which event types normal training blocks contain.
-    normal_mask = np.zeros(len(blocks), dtype=bool)
+    _say(progress, "Learning the usual routine and writing alerts…")
+    normal_mask = np.zeros(nb, dtype=bool)
     normal_mask[train_idx] = True
     if labelled:
         normal_mask &= (y == 0)
-    normal_presence = (counts[normal_mask] > 0).mean() if normal_mask.any() else pd.Series(dtype=float)
+    if not normal_mask.any():
+        normal_mask[:] = True
+    normal_presence = pd.Series((counts_np[normal_mask] > 0).mean(axis=0), index=tids)
+    normal_median = pd.Series(np.median(counts_np[normal_mask], axis=0), index=tids)
 
-    # Profile of a normal block, used to tell the story of each alert in plain words.
-    normal_counts = counts[normal_mask] if normal_mask.any() else counts
-    normal_median = normal_counts.median()
-    ev = pd.DataFrame([(e.block_id, e.line_no, e.template_id) for e in events],
-                      columns=["block_id", "line_no", "template_id"]).sort_values(["block_id", "line_no"])
-    ev["pos"] = ev.groupby("block_id").cumcount()
-    first = ev.groupby(["block_id", "template_id"])["pos"].min().reset_index()
-    normal_ids = set(blocks.loc[normal_mask, "block_id"])
-    typical_pos = first[first["block_id"].isin(normal_ids)].groupby("template_id")["pos"].median()
-    stats_rows = [(int(t), float(normal_presence.get(t, 0.0)), float(normal_median.get(t, 0.0)),
+    # typical position of each message type inside a normal task (orders the routine on screen)
+    rank_of = np.empty(nb, dtype=np.int64)
+    rank_of[order] = np.arange(nb)
+    ev = pd.DataFrame({"b": rank_of[P["block"]], "t": P["tid"], "l": P["line"]})
+    ev = ev[normal_mask[ev["b"].values]]
+    keep = pd.Series(ev["b"].unique()).sample(min(20000, ev["b"].nunique()), random_state=0)
+    sample = ev[ev["b"].isin(set(keep))].sort_values(["b", "l"])
+    sample["pos"] = sample.groupby("b").cumcount()
+    typical_pos = sample.groupby(["b", "t"])["pos"].min().groupby("t").median()
+    stats_rows = [(int(t), float(normal_presence[t]), float(normal_median[t]),
                    float(typical_pos[t]) if t in typical_pos.index else None) for t in tids]
+    del ev, sample
 
     stamp = models.now_iso()
     alerts, runs = [], []
     for name, (score, flag) in results.items():
         high_q = np.quantile(score[flag], 0.75) if flag.any() else np.inf
-        for i, bid in enumerate(blocks["block_id"]):
-            sev = models.severity(score[i], bool(flag[i]), high_q)
-            reason = models.explain_block(bid, counts.iloc[i], templates, normal_presence) if flag[i] else ""
-            alerts.append((bid, name, float(score[i]), int(flag[i]), sev, reason))
+        for i in range(nb):
+            f = bool(flag[i])
+            sev = models.severity(score[i], f, high_q)
+            reason = models.explain_block(block_ids[i], counts.iloc[i], templates, normal_presence) if f else ""
+            alerts.append((block_ids[i], name, float(score[i]), int(f), sev, reason))
         if labelled:
-            p, r, f = models.scores(y[test_idx], flag[test_idx])
-            runs.append((name, 1, len(train_idx), len(test_idx), p, r, f, stamp))
+            p, r, f1 = models.scores(y[test_idx], flag[test_idx])
+            runs.append((name, 1, len(train_idx), len(test_idx), p, r, f1, stamp))
         else:
             runs.append((name, 0, len(train_idx), len(test_idx), None, None, None, stamp))
 
-    store.reset(db_path)
-    with closing(store.connect(db_path)) as con:
-        store.insert_many(con, "log_events",
-            ((e.line_no, e.block_id, e.ts, e.level, e.component, e.template_id, e.content) for e in events), 7)
-        store.insert_many(con, "templates", templates.items(), 2)
-        store.insert_many(con, "blocks",
-            ((r.block_id, r.first_ts, int(r.n_events), r.label if isinstance(r.label, str) else None, r.split)
-             for r in blocks.itertuples()), 5)
-        store.insert_many(con, "alerts", alerts, 6)
-        store.insert_many(con, "model_runs", runs, 8)
-        store.insert_many(con, "template_stats", stats_rows, 4)
-        store.insert_many(con, "meta", [("source", os.path.basename(log_path)), ("demo", "1" if demo else "0"),
-                                          ("run_at", stamp), ("contamination", str(contamination)),
-                                          ("log_path", os.path.abspath(log_path)), ("if_threshold", str(if_thr)),
-                                          ("rf_threshold", "0.5"), ("labelled", "1" if labelled else "0"),
-                                          ("test_start", str(blocks.loc[test_idx[0], "first_ts"]))], 2)
-        con.commit()
+    def iso(u):
+        return datetime.fromtimestamp(int(u)).isoformat()
 
-    # Save the trained parts so live mode can parse and score new lines the same way.
-    joblib.dump({"tids": tids, "templates": templates, "miner": miner, "if_model": if_model, "if_thr": if_thr,
-                 "rf_model": rf_model, "stats_rows": stats_rows, "run_at": stamp},
-                model_path(db_path))
+    test_start_unix = int(first_unix[test_idx[0]])
+    # where live replay starts reading: the last checkpoint before the test period
+    cp = [c for c in P["checkpoints"] if datetime.fromisoformat(c[2]).timestamp() <= test_start_unix]
+    test_offset = cp[-1][1] if cp else 0
 
-    return {"lines_used": len(events), "blocks": len(blocks), "templates": len(templates),
-            "labelled": bool(labelled), "flagged": {k: int(v[1].sum()) for k, v in results.items()}}
+    store.insert_many(con, "templates", templates.items(), 2)
+    store.insert_many(con, "blocks", ((block_ids[i], iso(first_unix[i]), int(n_events[i]), lab[i], split[i])
+                                      for i in range(nb)), 5)
+    store.insert_many(con, "alerts", alerts, 6)
+    store.insert_many(con, "model_runs", runs, 8)
+    store.insert_many(con, "template_stats", stats_rows, 4)
+    store.insert_many(con, "meta", [
+        ("source", os.path.basename(log_path)), ("demo", "1" if demo else "0"), ("run_at", stamp),
+        ("contamination", str(contamination)), ("log_path", os.path.abspath(log_path)),
+        ("if_threshold", str(if_thr)), ("rf_threshold", "0.5"), ("labelled", "1" if labelled else "0"),
+        ("test_start", iso(test_start_unix)), ("test_offset", str(test_offset)),
+        ("n_lines", str(int(len(np.unique(P["line"]))))), ("n_blocks", str(nb)),
+        ("max_lines", str(max_lines or "")), ("seconds", str(round(time.time() - t0, 1)))], 2)
+    con.commit()
+    con.close()
+
+    joblib.dump({"tids": tids, "templates": templates, "miner": P["miner"], "if_model": if_model, "if_thr": if_thr,
+                 "rf_model": rf_model, "stats_rows": stats_rows, "run_at": stamp}, model_path(db_path))
+    os.replace(tmp_db, db_path)  # swap in the finished database in one step
+
+    return {"lines_used": int(len(P["block"])), "blocks": nb, "templates": nt, "labelled": bool(labelled),
+            "flagged": {k: int(v[1].sum()) for k, v in results.items()}, "seconds": round(time.time() - t0, 1)}
 
 
 def main():
@@ -124,7 +170,7 @@ def main():
     ap.add_argument("--demo", action="store_true", help="Mark the data as synthetic demo data")
     a = ap.parse_args()
     os.makedirs(os.path.dirname(a.db) or ".", exist_ok=True)
-    print(run(a.log, a.db, a.labels, a.max_lines, a.contamination, demo=a.demo))
+    print(json.dumps(run(a.log, a.db, a.labels, a.max_lines, a.contamination, demo=a.demo, progress=print)))
 
 
 if __name__ == "__main__":

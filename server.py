@@ -33,6 +33,7 @@ app.mount("/static", StaticFiles(directory=os.path.join(HERE, "web")), name="sta
 
 RUN = {"state": "idle", "message": "", "started": None}
 _cache: dict = {}
+_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------- helpers
@@ -59,11 +60,18 @@ def meta():
 
 
 def bundle():
-    """Everything that depends only on the current run, computed once."""
+    """Everything that depends only on the current run, computed once (and shared safely)."""
     m = meta()
     key = m.get("run_at")
     if _cache.get("key") == key:
         return _cache
+    with _lock:
+        if _cache.get("key") == key:
+            return _cache
+        return _build(m, key)
+
+
+def _build(m, key):
     _cache.clear()
     templates = {int(k): v for k, v in q("select template_id, template from templates").values}
     stats = q("select * from template_stats").set_index("template_id")
@@ -130,17 +138,21 @@ class RunReq(BaseModel):
     contamination: float = 0.03
 
 
+def _progress(msg):
+    RUN["message"] = msg
+
+
 def _do_run(req: RunReq):
     try:
         if req.mode == "demo":
-            pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, req.contamination, demo=True)
+            pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, req.contamination, demo=True, progress=_progress)
         else:
             if not req.log or not os.path.exists(req.log):
                 raise ValueError(f"Can't find the log file at {req.log!r}. Check the path.")
             lab = req.labels if req.labels and os.path.exists(req.labels) else None
             if req.labels and not lab:
                 raise ValueError(f"Can't find the labels file at {req.labels!r}.")
-            pipeline.run(req.log, DB, lab, req.max_lines or None, req.contamination, demo=False)
+            pipeline.run(req.log, DB, lab, req.max_lines or None, req.contamination, demo=False, progress=_progress)
         _cache.clear()
         RUN.update(state="done", message="Check finished.")
     except Exception as e:  # report in plain words
@@ -176,8 +188,8 @@ def state():
 def overview():
     b = bundle()
     by = b["by"]
-    n_lines = int(q("select count(*) n from log_events")["n"][0])
-    n_blocks = int(q("select count(*) n from blocks")["n"][0])
+    n_lines = int(b["meta"].get("n_lines") or q("select count(*) n from log_events")["n"][0])
+    n_blocks = int(b["meta"].get("n_blocks") or q("select count(*) n from blocks")["n"][0])
     # timeline: at most ~40 bars
     t0 = pd.to_datetime(q("select min(first_ts) t from blocks")["t"][0])
     t1 = pd.to_datetime(q("select max(first_ts) t from blocks")["t"][0])
@@ -211,7 +223,9 @@ def overview():
             "normal_track": "".join("o" * int(round(r.normal_median)) for _, r in
                                     b["stats"][b["stats"].normal_share >= 0.95].sort_values("typical_pos").iterrows()),
             "test_start": b["meta"].get("test_start"),
-            "n_train": int((q("select count(*) n from blocks where split='train'"))["n"][0])}
+            "n_train": int((q("select count(*) n from blocks where split='train'"))["n"][0]),
+            "demo": b["meta"].get("demo") == "1", "max_lines": b["meta"].get("max_lines") or None,
+            "live_wait_min": live_wait(b["meta"]) // 60}
 
 
 def normal_example(b):
@@ -293,8 +307,15 @@ def accuracy():
             "real": int(len(real)), "caught": int(real.flagged.sum()), "raised": int(t.flagged.sum()),
             "false_alarms": int(((t.label != "Anomaly") & (t.flagged == 1)).sum()),
             "precision": rr.precision, "recall": rr.recall, "f1": rr.f1,
-            "dots": [int(v) for v in real.sort_values("first_ts").flagged.tolist()[:400]]})
+            **dots(int(len(real)), int(real.flagged.sum()), int(((t.label != "Anomaly") & (t.flagged == 1)).sum()))})
     return out
+
+
+def dots(real, caught, false_alarms, most=200):
+    """Dot picture for the accuracy page: one dot per problem, or one dot per `unit` problems if many."""
+    unit = max(1, -(-real // most))
+    return {"unit": unit, "dot_caught": round(caught / unit), "dot_missed": round((real - caught) / unit),
+            "dot_false": min(round(false_alarms / unit), most)}
 
 
 @app.get("/api/walkthrough/{bid}")
@@ -327,6 +348,14 @@ def walkthrough(bid: str):
 
 
 # ---------------------------------------------------------------- live mode
+def live_wait(m):
+    """How long a task must be quiet before it is checked.
+
+    Measured on HDFS_v1 (20,000 newer tasks): 1 minute gave 715 false alarms, 10 minutes gave 1,
+    30 minutes gave 0 and caught 91% of real problems. The made-up demo tasks finish within a minute.
+    """
+    return 60 if m.get("demo") == "1" else 1800
+
 LIVE: dict = {}
 
 
@@ -363,7 +392,9 @@ async def live_stream(sid: str):
     if not s:
         raise HTTPException(404, "No live session.")
     m = meta()
-    eng = LiveEngine(pipeline.model_path(DB), m["log_path"], m["test_start"])
+    skip = set(q("select block_id from blocks where split='train'")["block_id"])
+    eng = LiveEngine(pipeline.model_path(DB), m["log_path"], m["test_start"], idle_secs=live_wait(m),
+                     offset=int(m.get("test_offset") or 0), skip_blocks=skip)
 
     async def gen():
         it = eng.events()
@@ -408,6 +439,8 @@ def main():
     if not has_data():
         print("First start: running the demo check once…")
         pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, 0.03, demo=True)
+    # prepare the dashboard data in the background, so the first page opens quickly
+    threading.Thread(target=lambda: has_data() and bundle(), daemon=True).start()
     url = f"http://localhost:{PORT}"
     print(f"\n  Security Log Monitor is running at {url}\n  Close this window to stop it.\n")
     if not os.environ.get("SECLOG_NO_BROWSER"):
