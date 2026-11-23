@@ -33,7 +33,13 @@
     const open = () => {
       M.es = new EventSource(`/api/m/stream?since=${M.seq}`);
       M.es.onmessage = (m) => onFeed(JSON.parse(m.data));
-      M.es.onerror = () => { M.es.close(); setTimeout(open, 2000); };
+      M.es.onopen = () => { if (M.down) { M.down = false; api("/api/m/state").then(applyStats).catch(() => {}); } };
+      M.es.onerror = () => {
+        M.es.close();
+        M.down = true;
+        $("#monSource").innerHTML = `<b style="color:var(--flare)">The monitor has stopped.</b> Start it again with run.bat. This page reconnects by itself.`;
+        setTimeout(open, 2000);
+      };
     };
     open();
     api("/api/m/state").then(applyStats).catch(() => {});
