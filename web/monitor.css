@@ -165,3 +165,10 @@ body[data-area="monitor"] .only-research, body[data-area="research"] .only-monit
   .conn > :last-child { grid-column: 1 / -1; }
 }
 @media (prefers-reduced-motion: reduce) { .radar .sweep, .radar .halo { animation: none !important; } }
+
+/* ---------- alert sound switch ---------- */
+.sound-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sound-btn .wave { display: none; }
+.sound-btn[aria-pressed="true"] .wave { display: inline; }
+.sound-btn[aria-pressed="true"] .mute { display: none; }
+.sound-btn[aria-pressed="true"] { border-color: var(--moss); color: var(--moss); }

@@ -49,6 +49,9 @@
     <header class="topbar">
       <div class="source only-research" id="source">Loading…</div>
       <div class="source only-monitor" id="monSource">Connecting…</div>
+      <button class="btn small ghost only-monitor sound-btn" id="soundBtn" type="button" aria-pressed="false" title="Play a sound when a threat is found">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5h3l4-3.5v12l-4-3.5H3z"/><path class="wave" d="M13 7a4 4 0 0 1 0 6M15.5 4.5a7.5 7.5 0 0 1 0 11"/><path class="mute" d="M13.5 7.5l5 5M18.5 7.5l-5 5"/></svg>
+        <span>Sound off</span></button>
       <label class="toggle"><input type="checkbox" id="techToggle"> Show technical terms</label>
       <button class="btn small ghost only-research" id="runBtn" type="button">Re-run the HDFS check</button>
       <label class="btn small primary only-monitor" for="filePick">Drop or choose a log file</label>

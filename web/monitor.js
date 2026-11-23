@@ -38,6 +38,14 @@
     open();
     api("/api/m/state").then(applyStats).catch(() => {});
     setupDrop();
+    // browsers only allow sound after a click, so the switch itself starts the audio
+    $("#soundBtn").addEventListener("click", () => setSound(!SOUND.on, true));
+    if (SOUND.on) {
+      setSound(true, false);
+      const wake = () => { if (SOUND.ctx && SOUND.ctx.state === "suspended") SOUND.ctx.resume(); };
+      window.addEventListener("pointerdown", wake, { once: true });
+      window.addEventListener("keydown", wake, { once: true });
+    }
   };
   M.leave = () => { M.timers.forEach(clearInterval); M.timers = []; M.page = null; hideTip(); };
 
@@ -47,6 +55,10 @@
     d.events.forEach((e) => M.river.push(e));
     if (M.river.length > 60) M.river.splice(0, M.river.length - 60);
     if (M.page === "monitor") drawRiver();
+    if (d.alerts.length) {
+      const top = d.alerts.reduce((m, a) => (RANK[a.severity] > RANK[m] ? a.severity : m), "low");
+      playAlert(top);
+    }
     d.alerts.forEach((a) => {
       toast(a);
       M.alerts.unshift(a);
@@ -75,6 +87,50 @@
     $("#monSource").innerHTML = `Watching <b>${live}</b> live connection${live === 1 ? "" : "s"}, ${fmt(s.rate)} lines a second`;
     if (M.page === "monitor") updateHome();
   }
+
+  /* ---------------------------------------------------------------- alert sounds (made in the browser, no files) */
+  const SOUND = { on: false, ctx: null, last: 0 };
+  const RANK = { low: 1, medium: 2, high: 3, critical: 4 };
+  try { SOUND.on = localStorage.getItem("sound") === "1"; } catch (e) { /* storage may be blocked */ }
+
+  function tone(freq, start, dur, type = "sine", vol = 0.18, endFreq = null) {
+    const c = SOUND.ctx, o = c.createOscillator(), g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, c.currentTime + start);
+    if (endFreq) o.frequency.linearRampToValueAtTime(endFreq, c.currentTime + start + dur);
+    g.gain.setValueAtTime(0.0001, c.currentTime + start);
+    g.gain.exponentialRampToValueAtTime(vol, c.currentTime + start + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + start + dur);
+    o.connect(g).connect(c.destination);
+    o.start(c.currentTime + start);
+    o.stop(c.currentTime + start + dur + 0.05);
+  }
+
+  function playAlert(sev) {
+    if (!SOUND.on || !SOUND.ctx) return;
+    const now = Date.now();
+    if (now - SOUND.last < 1500) return;  // a burst of alerts makes one sound, not fifty
+    SOUND.last = now;
+    if (SOUND.ctx.state === "suspended") SOUND.ctx.resume();
+    if (sev === "critical") {          // short alarm: three rising sweeps
+      [0, 0.3, 0.6].forEach((t) => tone(600, t, 0.26, "sawtooth", 0.12, 950));
+    } else if (sev === "high") {       // double beep
+      tone(740, 0, 0.13, "triangle", 0.22); tone(740, 0.2, 0.13, "triangle", 0.22);
+    } else {                           // soft chime
+      tone(880, 0, 0.5, "sine", 0.16); tone(1320, 0.08, 0.45, "sine", 0.08);
+    }
+  }
+
+  function setSound(on, announce) {
+    SOUND.on = on;
+    try { localStorage.setItem("sound", on ? "1" : "0"); } catch (e) { /* ignore */ }
+    if (on && !SOUND.ctx) SOUND.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const b = $("#soundBtn");
+    b.setAttribute("aria-pressed", on);
+    $("span", b).textContent = on ? "Sound on" : "Sound off";
+    if (on && announce) { SOUND.last = 0; playAlert("medium"); }
+  }
+  M.setSound = setSound;
 
   /* ---------------------------------------------------------------- toasts */
   function toast(a) {
