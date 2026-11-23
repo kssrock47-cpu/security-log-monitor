@@ -3,11 +3,37 @@
 **AI-Based Security Log Analysis and Threat Monitoring System**, the FYP1 (AP1) prototype by Kyaw Swe Sien Marma, Universiti Malaya.
 Supervisor: Dr. Shapla Khanam. Collaborator: Ts. Dr. Muhammad Faiz bin Mohd Zaki.
 
-Computers keep a diary of everything they do, called a log. Real systems write millions of lines, far too many for a person to read. This monitor reads the log, learns the usual routine, flags the parts that break it, and explains each one in plain words with the lines that prove it. **The AI does a first check. A person still decides what matters.**
+It takes security logs from anywhere, watches them live or checks them offline, and raises a threat when something looks wrong, explained in plain words with the log lines as proof. **The AI does a first check. A person still decides what matters.**
+
+## Two parts
+
+**1. Live monitor (any security logs)**
+* **Connect logs, online or offline:**
+  * drop a file
+  * watch a file or folder on this PC
+  * link a web address
+  * receive syslog from routers, servers and other PCs
+  * read this PC's Windows Event Log
+  * use the built-in attack lab
+* **Reads:** Linux syslog and auth.log (SSH, sudo, useradd, firewall), Apache and Nginx web logs, Windows events (live or `.evtx`), JSON lines, HDFS and plain text.
+* **Finds threats two ways:**
+  * **AI:** an Isolation Forest learns what normal looks like for each address or user over 30-second windows, then flags anything unusual.
+  * **Known attack patterns:** 15 patterns, including password guessing, password spraying, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
+* **Screens:** a radar of who's active, a live threat level, pop-up alerts, a threats inbox with evidence and advice, and buttons to mark each alert as real or a false alarm.
+* **Attack lab:** a pretend network with 8 attacks to launch, timed to show how fast each one is caught. "Quiet data theft" matches no known pattern, so only the AI can catch it.
+
+**2. Research on HDFS_v1 (the FYP evaluation)**
+The full benchmark run on 11,175,629 real log lines: Drain3 parsing, Random Forest and Isolation Forest with a time-ordered split, accuracy against the official answer key, and a replay of the newer logs. Results are below.
 
 ## Run it (Windows)
 
 Double-click `run.bat`. The first run sets everything up (needs internet once). After that it works offline and opens http://localhost:8600 in your browser.
+To read the Windows **Security** log (logons, failed passwords), right-click `run.bat` and choose **Run as administrator**.
+For `.evtx` files, also run `pip install python-evtx`.
+
+### Connecting other machines
+Linux server (rsyslog): add `*.* @@<this-PC's-address>:5140` to `/etc/rsyslog.conf`, then `sudo systemctl restart rsyslog`.
+Router or firewall: set the remote syslog server to this PC's address, port 5140. Allow the port in Windows Firewall.
 
 Any other system:
 
@@ -15,7 +41,7 @@ Any other system:
     .venv/bin/pip install -r requirements.txt   # Windows: .venv\Scripts\pip
     .venv/bin/python server.py
 
-## What you can do
+## Research screens
 
 1. **What the AI found**: how many storage tasks look unusual, when it happened, and what kind of problems they were.
 2. **Review the alerts**: each alert shows the usual routine next to this task's (as a row of beads), what to check next, and the log lines as evidence. Mark each one *Real problem*, *False alarm* or *Not sure*. Keys: `1` `2` `3` to answer, `J` `K` to move.
@@ -47,17 +73,30 @@ Command-line alternative:
 
     python -m seclog.pipeline --log C:\path\HDFS.log --labels C:\path\anomaly_label.csv --max-lines 1000000
 
-The full file (about 11 million lines) has not been run yet.
+The full file (about 11 million lines) takes about 9 minutes and stays under 2 GB of memory.
+
+## Results on HDFS_v1 (full dataset)
+
+Run on 23 Nov 2026: all 11,175,629 lines and 575,061 storage tasks (blocks), using the official `anomaly_label.csv`. Detectors trained on the older 402,542 tasks and tested on the newer 172,519 (3,723 real problems among them). The full run took 8.8 minutes on a laptop (Intel i9-14900HX, 32 GB RAM).
+
+| Detector | Real problems caught | False alarms | Precision | Recall | F1 |
+|---|---|---|---|---|---|
+| Random Forest (supervised) | 3,717 of 3,723 | 0 | 1.000 | 0.998 | 0.999 |
+| Isolation Forest (unsupervised) | 2,116 of 3,723 | 510 | 0.806 | 0.568 | 0.667 |
+
+Live mode on the same data (first 20,000 newer tasks replayed): checking a task after 30 minutes of quiet caught 326 of 359 real problems with 0 false alarms. Checking after only 1 minute raised 715 false alarms, because real tasks often send their last messages minutes later. Live mode therefore waits 30 minutes of log time on real logs.
+
+Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. On loghub's labelled HDFS_2k sample it groups 99.75% of lines correctly.
 
 ## What is real and what is not
 
 * `data/sample/demo_hdfs_style.log` and `demo_labels.csv` are **made up** by `seclog/make_demo.py`, built to look like HDFS logs. They show how the monitor works. **Numbers on them are not research results.**
 * `data/sample/HDFS_2k.log` is 2,000 real lines from loghub, used only to test the parser.
-* No results on HDFS_v1 are claimed yet.
+* The HDFS_v1 results above come from the real dataset; the demo numbers do not.
 
 ## Not built yet (planned for FYP2)
 
-* Full HDFS_v1 run and a second dataset (BGL)
+* A second dataset (BGL), and comparing against published results
 * A deep sequence model (for example LSTM)
 * Deeper per-alert explanations (SHAP)
 * Learning from the saved reviews to improve over time (the reviews are already stored in the `feedback` table)
@@ -73,8 +112,15 @@ The full file (about 11 million lines) has not been run yet.
     seclog/pipeline.py   offline check end to end, saves results to SQLite
     seclog/live.py       live replay: parse and check tasks as lines arrive
     seclog/make_demo.py  generates the made-up demo log
-    tests/               11 tests (python -m pytest)
+    seclog/formats.py    reads many log formats into one shape
+    seclog/rules.py      15 known attack patterns (MITRE ATT&CK)
+    seclog/ai.py         live AI: per-address windows, Isolation Forest, plain reasons
+    seclog/sources.py    connections: file, folder, web address, syslog, Windows events, attack lab
+    seclog/simulator.py  the attack lab
+    seclog/monitor.py    the live engine and its SQLite store
+    web/monitor.js       live monitor screens
+    tests/               18 tests (python -m pytest)
 
 ## Credits
 
-HDFS logs: loghub (He et al., 2023). Log parsing: Drain3 (IBM). Fonts: IBM Plex (SIL Open Font License).
+HDFS, OpenSSH, Linux and Apache sample logs: loghub (He et al., 2023). Log parsing: Drain3 (IBM). Fonts: IBM Plex (SIL Open Font License).

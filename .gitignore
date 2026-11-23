@@ -4,3 +4,7 @@ __pycache__/
 data/*.db
 data/*.joblib
 *.pyc
+data/monitor.db
+data/uploads/
+data/*.building
+data/full_run.*

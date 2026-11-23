@@ -26,6 +26,7 @@ CREATE TABLE template_stats (template_id INTEGER PRIMARY KEY, normal_share REAL,
 CREATE TABLE feedback (block_id TEXT PRIMARY KEY, verdict TEXT, at TEXT);
 CREATE INDEX idx_events_block ON log_events(block_id);
 CREATE INDEX idx_alerts_block ON alerts(block_id);
+CREATE INDEX idx_events_line ON log_events(line_no);
 """
 
 

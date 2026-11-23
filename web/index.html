@@ -4,29 +4,42 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Security Log Monitor</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1f3a'/%3E%3Ccircle cx='8' cy='16' r='3' fill='%232e8b62'/%3E%3Ccircle cx='16' cy='16' r='3' fill='%232e8b62'/%3E%3Ccircle cx='24' cy='16' r='3.5' fill='%23c43d2b'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1f3a'/%3E%3Ccircle cx='16' cy='16' r='10' fill='none' stroke='%232e8b62' stroke-width='2'/%3E%3Cpath d='M16 16 L24 9' stroke='%23c9a227' stroke-width='2.5'/%3E%3Ccircle cx='21' cy='20' r='2.5' fill='%23c43d2b'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/monitor.css">
 </head>
-<body>
+<body data-area="monitor">
 <div class="shell">
-  <nav class="rail" aria-label="Steps">
+  <nav class="rail" aria-label="Main">
     <div class="brand">
       <svg width="38" height="38" viewBox="0 0 38 38" aria-hidden="true">
         <rect width="38" height="38" rx="10" fill="#14325c"/>
-        <line x1="8" y1="19" x2="30" y2="19" stroke="#3a5579" stroke-width="2"/>
-        <circle cx="9" cy="19" r="3.4" fill="#2e8b62"/><circle cx="19" cy="19" r="3.4" fill="#2e8b62"/>
-        <circle cx="29" cy="19" r="4" fill="#c43d2b"/>
+        <circle cx="19" cy="19" r="12" fill="none" stroke="#2e8b62" stroke-width="2"/>
+        <circle cx="19" cy="19" r="6" fill="none" stroke="#3a5579" stroke-width="1.5"/>
+        <path d="M19 19 L28 10" stroke="#c9a227" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="25" cy="24" r="2.8" fill="#c43d2b"/>
       </svg>
       <div><b>Security Log Monitor</b><span>AP1 prototype</span></div>
     </div>
-    <ol class="steps">
-      <li><a href="#/overview" data-nav="overview">What the AI found<small>The big picture</small></a></li>
-      <li><a href="#/alerts" data-nav="alerts">Review the alerts<small>One by one, with evidence</small></a></li>
-      <li><a href="#/live" data-nav="live">Watch it live<small>Logs arriving in real time</small></a></li>
-      <li><a href="#/accuracy" data-nav="accuracy">How often it's right<small>Checked against an answer key</small></a></li>
-      <li><a href="#/how" data-nav="how">How it works<small>Follow one task through</small></a></li>
-    </ol>
+
+    <div class="navgroup">
+      <span class="navlabel">Monitor</span>
+      <a href="#/monitor" data-nav="monitor"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M10 10 L15.5 4.5"/></svg>Live monitor</a>
+      <a href="#/threats" data-nav="threats"><svg viewBox="0 0 20 20"><path d="M10 2.5 L18 16.5 H2 Z"/><path d="M10 8v4M10 14.2v.3"/></svg>Threats<span class="badge" id="threatBadge" hidden></span></a>
+      <a href="#/connect" data-nav="connect"><svg viewBox="0 0 20 20"><path d="M7 13 L13 7"/><path d="M8.5 5.5 L10.5 3.5 a3.2 3.2 0 0 1 4.5 4.5 L13 10"/><path d="M11.5 14.5 L9.5 16.5 a3.2 3.2 0 0 1 -4.5 -4.5 L7 10"/></svg>Connect logs</a>
+      <a href="#/lab" data-nav="lab"><svg viewBox="0 0 20 20"><path d="M7.5 2.5h5M8.5 2.5v5L3.5 16a1 1 0 0 0 .9 1.5h11.2a1 1 0 0 0 .9-1.5L11.5 7.5v-5"/><path d="M5.5 12.5h9"/></svg>Attack lab</a>
+    </div>
+    <div class="navgroup">
+      <span class="navlabel">Research on HDFS_v1</span>
+      <a href="#/research" data-nav="research"><svg viewBox="0 0 20 20"><path d="M3 16.5h14M5.5 13.5v-4M10 13.5v-8M14.5 13.5v-6"/></svg>Results</a>
+      <a href="#/alerts" data-nav="alerts"><svg viewBox="0 0 20 20"><rect x="3" y="3.5" width="14" height="13" rx="2"/><path d="M6.5 8h7M6.5 11.5h4.5"/></svg>Review alerts</a>
+      <a href="#/replay" data-nav="replay"><svg viewBox="0 0 20 20"><path d="M7 5.5v9l7-4.5z"/></svg>Replay</a>
+      <a href="#/accuracy" data-nav="accuracy"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3.5"/><circle cx="10" cy="10" r=".6"/></svg>Accuracy</a>
+      <a href="#/how" data-nav="how"><svg viewBox="0 0 20 20"><circle cx="4.5" cy="10" r="1.8"/><circle cx="10" cy="10" r="1.8"/><circle cx="15.5" cy="10" r="1.8"/><path d="M6.3 10h1.9M11.8 10h1.9"/></svg>How it works</a>
+    </div>
+
     <div class="rail-foot">
+      <div class="levelpill" id="railLevel"><i></i><span>Calm</span></div>
       <p>The AI does a first check.<br>A person still decides what matters.</p>
       <p>Kyaw Swe Sien Marma, Universiti Malaya</p>
     </div>
@@ -34,28 +47,34 @@
 
   <div class="main">
     <header class="topbar">
-      <div class="source" id="source">Loading…</div>
+      <div class="source only-research" id="source">Loading…</div>
+      <div class="source only-monitor" id="monSource">Connecting…</div>
       <label class="toggle"><input type="checkbox" id="techToggle"> Show technical terms</label>
-      <button class="btn small ghost" id="runBtn" type="button">Check a log file</button>
+      <button class="btn small ghost only-research" id="runBtn" type="button">Re-run the HDFS check</button>
+      <label class="btn small primary only-monitor" for="filePick">Drop or choose a log file</label>
+      <input type="file" id="filePick" multiple hidden>
     </header>
     <main class="view" id="view" tabindex="-1"></main>
   </div>
 </div>
 
+<div class="dropzone" id="dropzone" hidden><div><b>Drop to check these logs</b><span>Any text log: Linux, web server, Windows, firewall, JSON, HDFS</span></div></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
 <dialog id="runDialog" aria-labelledby="runTitle">
   <form class="modal" method="dialog" id="runForm">
-    <h2 id="runTitle">Check a log file</h2>
+    <h2 id="runTitle">Re-run the HDFS check</h2>
     <div class="seg tabs" role="group" aria-label="Which logs">
       <button type="button" data-mode="demo" aria-pressed="true">Demo logs</button>
       <button type="button" data-mode="file" aria-pressed="false">My own file</button>
     </div>
-    <div id="modeDemo"><p class="muted">Runs the whole check again on the made-up demo logs. Takes a few seconds.</p></div>
+    <div id="modeDemo"><p class="muted">Runs the whole research check again on the made-up demo logs. This replaces the results shown in Research.</p></div>
     <div id="modeFile" hidden>
       <div class="stack" style="gap:12px">
         <label>Log file (HDFS format)<input type="text" name="log" placeholder="C:\Users\you\Downloads\HDFS_v1\HDFS.log"></label>
         <label>Answer key, optional<input type="text" name="labels" placeholder="C:\Users\you\Downloads\HDFS_v1\preprocessed\anomaly_label.csv"></label>
-        <label>Read only the first lines (leave empty for all)<input type="number" name="max_lines" value="1000000" min="1000" step="100000"></label>
-        <p class="muted small" style="margin:0">With the answer key, the monitor can also say how often it is right. A big file can take several minutes.</p>
+        <label>Read only the first lines (leave empty for all)<input type="number" name="max_lines" min="1000" step="100000"></label>
+        <p class="muted small" style="margin:0">The full HDFS_v1 file takes about 9 minutes.</p>
       </div>
     </div>
     <div class="status" id="runStatus" hidden></div>
@@ -66,7 +85,10 @@
   </form>
 </dialog>
 
+<dialog id="connDialog" aria-labelledby="connTitle"><form class="modal" method="dialog" id="connForm"></form></dialog>
+
 <div class="tip" id="tip" role="tooltip"></div>
 <script src="/static/app.js"></script>
+<script src="/static/monitor.js"></script>
 </body>
 </html>

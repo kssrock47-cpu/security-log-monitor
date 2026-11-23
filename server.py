@@ -14,13 +14,16 @@ from contextlib import closing
 from datetime import datetime
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from seclog import pipeline, plain
 from seclog.live import LiveEngine
+from seclog.monitor import Monitor
+from seclog.simulator import ATTACKS
+from seclog.sources import lan_ip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(HERE, "data", "seclog.db")
@@ -32,6 +35,7 @@ app = FastAPI(title="Security Log Monitor")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "web")), name="static")
 
 RUN = {"state": "idle", "message": "", "started": None}
+MON = Monitor(os.path.join(HERE, "data", "monitor.db"), os.path.join(HERE, "data", "uploads"))
 _cache: dict = {}
 _lock = threading.Lock()
 
@@ -432,6 +436,178 @@ async def live_stream(sid: str):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ================================================================ live security monitor
+@app.get("/api/m/state")
+def m_state():
+    import platform
+    st = MON.stats()
+    st["connections"] = MON.known_sources()
+    st["platform"] = platform.system()
+    st["lan_ip"] = lan_ip()
+    sim = MON.simulator()
+    st["lab"] = {"running": bool(sim), "ready": bool(sim and sim.sim.ready)}
+    return st
+
+
+class SourceReq(BaseModel):
+    kind: str
+    name: str | None = None
+    config: dict = {}
+
+
+NAMES = {"watch": "Watched file", "url": "Web address", "syslog": "Devices on the network",
+         "windows": "This PC's Windows events", "simulator": "Attack lab"}
+
+
+@app.post("/api/m/sources")
+def m_add(r: SourceReq):
+    if r.kind == "upload":
+        raise HTTPException(400, "Upload files with /api/m/upload.")
+    if r.kind == "watch" and not os.path.exists(os.path.expanduser(r.config.get("path", ""))):
+        raise HTTPException(400, f"Can't find {r.config.get('path')!r} on this computer. Check the path.")
+    if r.kind == "url" and not str(r.config.get("url", "")).startswith(("http://", "https://")):
+        raise HTTPException(400, "The web address must start with http:// or https://")
+    try:
+        sid = MON.add_source(r.kind, r.name or NAMES.get(r.kind, r.kind), r.config)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": sid}
+
+
+@app.post("/api/m/sources/{sid}/{action}")
+def m_source_action(sid: int, action: str):
+    if action == "stop":
+        MON.stop_source(sid)
+    elif action == "start":
+        MON.start_source(sid)
+    elif action == "remove":
+        MON.remove_source(sid)
+    else:
+        raise HTTPException(400, "action must be stop, start or remove")
+    return {"ok": True}
+
+
+@app.post("/api/m/upload")
+async def m_upload(request: Request, name: str = "upload.log"):
+    async def chunks():
+        async for c in request.stream():
+            yield c
+    data = []
+    async for c in chunks():
+        data.append(c)
+    path, size = MON.save_upload(name, iter(data))
+    if size == 0:
+        raise HTTPException(400, "The file is empty.")
+    sid = MON.add_source("upload", name, {"path": path, "size": size})
+    return {"id": sid, "size": size}
+
+
+SAMPLES = {
+    "ssh": ("OpenSSH_2k.log", "Real SSH server under attack (loghub)"),
+    "linux": ("Linux_2k.log", "Real Linux system log (loghub)"),
+    "apache": ("Apache_2k.log", "Real Apache web server errors (loghub)"),
+}
+
+
+@app.post("/api/m/sample/{key}")
+def m_sample(key: str):
+    if key not in SAMPLES:
+        raise HTTPException(404, "No such sample.")
+    fn, name = SAMPLES[key]
+    path = os.path.join(HERE, "data", "sample", fn)
+    return {"id": MON.add_source("upload", name, {"path": path, "size": os.path.getsize(path), "sample": True})}
+
+
+@app.get("/api/m/alerts")
+def m_alerts(status: str | None = None, limit: int = 500):
+    return MON.alerts(limit, status)
+
+
+@app.get("/api/m/alerts/{aid}")
+def m_alert(aid: int):
+    d = MON.alert_detail(aid)
+    if not d:
+        raise HTTPException(404, "No such alert.")
+    return d
+
+
+class Status(BaseModel):
+    status: str
+
+
+@app.post("/api/m/alerts/{aid}/status")
+def m_alert_status(aid: int, s: Status):
+    try:
+        MON.set_status(aid, s.status)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.get("/api/m/entities")
+def m_entities(minutes: int = 15):
+    return MON.entity_list(minutes)
+
+
+@app.get("/api/m/stream")
+async def m_stream(request: Request, since: int = 0):
+    async def gen():
+        seq = since or MON.seq
+        while True:
+            if await request.is_disconnected():
+                break
+            items, seq_now = MON.since(seq)
+            seq = seq_now
+            if items:
+                evs = [p for _, k, p in items if k == "event"][-40:]
+                alerts = [p for _, k, p in items if k == "alert"]
+                other = [{"kind": k, **p} for _, k, p in items if k not in ("event", "alert", "stats")]
+                stats = [p for _, k, p in items if k == "stats"]
+                payload = {"events": evs, "alerts": alerts, "notes": other[-20:], "seq": seq}
+                if stats:
+                    payload["stats"] = stats[-1]
+                yield f"data: {json.dumps(payload, default=str)}\n\n"
+            await asyncio.sleep(0.4)
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/m/lab")
+def m_lab():
+    sim = MON.simulator()
+    return {"running": bool(sim), "ready": bool(sim and sim.sim.ready),
+            "catalog": [{"kind": k, "name": v[0], "text": v[1]} for k, v in ATTACKS.items()],
+            "attacks": [{**a, "now": time.time()} for a in (sim.sim.attacks if sim else [])][:50]}
+
+
+@app.post("/api/m/lab/start")
+def m_lab_start():
+    return {"id": MON.add_source("simulator", "Attack lab", {})}
+
+
+@app.post("/api/m/lab/stop")
+def m_lab_stop():
+    sim = MON.simulator()
+    if sim:
+        MON.stop_source(sim.sid)
+    return {"ok": True}
+
+
+class Attack(BaseModel):
+    kind: str
+
+
+@app.post("/api/m/lab/attack")
+def m_lab_attack(a: Attack):
+    sim = MON.simulator()
+    if not sim or not sim.sim.ready:
+        raise HTTPException(409, "Start the attack lab first, and wait a moment while it learns.")
+    try:
+        return sim.sim.launch(a.kind)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 def main():

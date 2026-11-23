@@ -1,0 +1,157 @@
+"""Known attack patterns, checked as each event arrives.
+
+Each rule watches a short sliding window per attacker and fires once per cooldown,
+so a long attack becomes one alert with a growing count, not hundreds of alerts.
+MITRE ATT&CK ids are shown when "technical terms" is switched on.
+"""
+import re
+from collections import defaultdict, deque
+from datetime import timedelta
+
+SQLI = re.compile(r"(?:%27|')\s*(?:or|and|union)\b|union(?:\s|%20|\+)+select|select(?:\s|%20|\+).+from|"
+                  r"sleep\(|benchmark\(|information_schema|--(?:\s|%20|$)|/\*.*\*/", re.I)
+XSS = re.compile(r"<script|%3cscript|javascript:|onerror=|onload=|alert\(", re.I)
+TRAVERSAL = re.compile(r"\.\./|\.\.%2f|%2e%2e|/etc/passwd|win\.ini|boot\.ini", re.I)
+CMDI = re.compile(r";\s*(?:cat|ls|id|whoami|wget|curl|nc|bash)\b|\|\s*(?:sh|bash)|\$\(|%7c|`", re.I)
+SCANNER_UA = re.compile(r"sqlmap|nikto|nmap|masscan|zgrab|gobuster|dirbuster|wpscan|nuclei|acunetix|hydra|"
+                        r"python-requests|curl/|Go-http-client", re.I)
+SENSITIVE_PATH = re.compile(r"/(?:\.env|\.git|wp-admin|wp-login|phpmyadmin|admin|xmlrpc\.php|server-status|"
+                            r"cgi-bin|actuator|\.aws|config\.php)", re.I)
+
+RULES = {
+    "brute_force": ("Someone is guessing passwords", "high", "T1110.001 Brute Force: Password Guessing",
+                    "Block this address for now, and make sure the targeted accounts use strong passwords or keys."),
+    "spray": ("One address is trying many different usernames", "high", "T1110.003 Brute Force: Password Spraying",
+              "Block this address. Check whether any of the tried usernames logged in successfully afterwards."),
+    "break_in": ("A login succeeded right after many failed guesses", "critical", "T1078 Valid Accounts",
+                 "Treat this account as possibly stolen: lock it, change its password, and check what it did after logging in."),
+    "web_attack": ("A web attack was attempted", "high", "T1190 Exploit Public-Facing Application",
+                   "Check the response code: 200 means the page answered, so confirm the input is handled safely. Block the address."),
+    "scanner": ("An automated attack tool is probing the website", "medium", "T1595 Active Scanning",
+                "Usually noise from the internet, but block the address if it keeps going."),
+    "web_probe": ("Someone is hunting for hidden pages", "medium", "T1595.003 Wordlist Scanning",
+                  "Make sure admin pages and secret files are not reachable from outside. Block the address if it continues."),
+    "port_scan": ("Someone is scanning the network for open doors", "high", "T1046 Network Service Discovery",
+                  "Check that only the ports you need are open. Block the address at the firewall."),
+    "priv_fail": ("Someone failed to get admin rights", "medium", "T1548 Abuse Elevation Control Mechanism",
+                  "Ask the user if it was them. Repeated failures can mean someone is using their account."),
+    "root_shell": ("Someone opened an admin (root) shell", "high", "T1548.003 Sudo and Sudo Caching",
+                   "Confirm this was planned work. An unexpected root shell is a strong sign of an intruder."),
+    "new_account": ("A new user account was created", "medium", "T1136 Create Account",
+                    "Confirm someone in your team created it. Attackers add accounts to get back in later."),
+    "admin_group": ("Someone was given admin rights", "high", "T1098 Account Manipulation",
+                    "Confirm this change was approved. If not, remove the rights and lock the account."),
+    "log_cleared": ("Security logs were wiped", "critical", "T1070.001 Indicator Removal: Clear Windows Event Logs",
+                    "Attackers clear logs to hide their tracks. Investigate this machine straight away."),
+    "malware": ("Antivirus found malware", "critical", "T1204 User Execution",
+                "Disconnect the machine from the network and run a full scan."),
+    "new_service": ("A new background service was installed", "medium", "T1543.003 Create or Modify System Process: Windows Service",
+                    "Check the service name and file. Attackers install services to keep running after a restart."),
+    "lockout": ("An account was locked after too many wrong passwords", "medium", "T1110 Brute Force",
+                "Find out who tried. If it wasn't the account owner, someone may be guessing its password."),
+}
+
+
+class RuleEngine:
+    def __init__(self):
+        self.fails = defaultdict(deque)        # ip -> times of failed logins
+        self.fail_users = defaultdict(deque)   # ip -> (time, user)
+        self.http4 = defaultdict(deque)        # ip -> (time, path)
+        self.ports = defaultdict(deque)        # ip -> (time, port)
+        self.priv = defaultdict(deque)
+        self.last_fired = {}                   # (rule, entity) -> time
+
+    @staticmethod
+    def _trim(dq, now, secs):
+        while dq and (now - (dq[0][0] if isinstance(dq[0], tuple) else dq[0])).total_seconds() > secs:
+            dq.popleft()
+
+    def _fire(self, rule, ent, now, detail, cooldown=300):
+        key = (rule, ent)
+        last = self.last_fired.get(key)
+        if last and (now - last).total_seconds() < cooldown:
+            return {"rule": rule, "entity": ent, "update": True, "detail": detail}
+        self.last_fired[key] = now
+        title, sev, mitre, advice = RULES[rule]
+        return {"rule": rule, "entity": ent, "update": False, "title": title, "severity": sev, "mitre": mitre,
+                "advice": advice, "detail": detail}
+
+    def check(self, ev: dict, ent: str) -> list:
+        """Return a list of rule hits for this event (usually empty)."""
+        now, msg, out = ev["ts"], ev["msg"], []
+        ip = ev.get("src_ip")
+        eid = ev.get("event_id")
+
+        # --- logins ---------------------------------------------------------------
+        if ev.get("outcome") == "fail" and ev["fmt"] != "web" and (ip or ev.get("user")):
+            k = ip or ent
+            dq = self.fails[k]
+            dq.append(now)
+            self._trim(dq, now, 120)
+            if len(dq) >= 8:
+                out.append(self._fire("brute_force", k, now, f"{len(dq)} failed logins in the last 2 minutes"))
+            if ev.get("user"):
+                du = self.fail_users[k]
+                du.append((now, ev["user"]))
+                self._trim(du, now, 300)
+                users = {u for _, u in du}
+                if len(users) >= 5:
+                    out.append(self._fire("spray", k, now, f"{len(users)} different usernames tried in 5 minutes, "
+                                          f"for example {', '.join(sorted(users)[:4])}"))
+        if ev.get("outcome") == "success" and ip:
+            dq = self.fails.get(ip)
+            if dq:
+                recent = [t for t in dq if (now - t).total_seconds() <= 180]
+                if len(recent) >= 8:  # a few typos are normal; a run of failures then success is not
+                    who = f" as '{ev['user']}'" if ev.get("user") else ""
+                    out.append(self._fire("break_in", ip, now, f"Logged in{who} after {len(recent)} failed attempts "
+                                          "in the last 3 minutes"))
+        if eid == 4740:
+            out.append(self._fire("lockout", ent, now, msg[:160]))
+
+        # --- web --------------------------------------------------------------------
+        if ev["fmt"] == "web" and ev.get("path"):
+            p = ev["path"]
+            kind = ("SQL injection" if SQLI.search(p) else "cross-site scripting" if XSS.search(p) else
+                    "path traversal" if TRAVERSAL.search(p) else "command injection" if CMDI.search(p) else None)
+            if kind:
+                out.append(self._fire("web_attack", ip, now, f"{kind} in {ev['method']} {p[:120]} "
+                                      f"(answer {ev['status']})"))
+            if ev.get("ua") and SCANNER_UA.search(ev["ua"]):
+                out.append(self._fire("scanner", ip, now, f"Tool: {ev['ua'][:80]}", cooldown=900))
+            if ev.get("status") and 400 <= ev["status"] < 500:
+                dq = self.http4[ip]
+                dq.append((now, p))
+                self._trim(dq, now, 60)
+                paths = {x for _, x in dq}
+                if len(paths) >= 15 or (len(paths) >= 5 and any(SENSITIVE_PATH.search(x) for x in paths)):
+                    out.append(self._fire("web_probe", ip, now, f"{len(paths)} missing or forbidden pages in a minute, "
+                                          f"for example {', '.join(sorted(paths)[:3])}"))
+
+        # --- network ----------------------------------------------------------------
+        if ev.get("port") and ip and ("BLOCK" in msg or "DROP" in msg or "DENY" in msg.upper() or eid == 5157):
+            dq = self.ports[ip]
+            dq.append((now, ev["port"]))
+            self._trim(dq, now, 60)
+            ports = {x for _, x in dq}
+            if len(ports) >= 15:
+                out.append(self._fire("port_scan", ip, now, f"{len(ports)} different ports knocked on in a minute"))
+
+        # --- admin rights and accounts ----------------------------------------------------
+        if re.search(r"NOT in sudoers|incorrect password attempts|su: FAILED|FAILED su|authentication failure.*sudo", msg) \
+                or (ev.get("app") or "").startswith("sudo") and ev.get("outcome") == "fail":
+            out.append(self._fire("priv_fail", ent, now, msg[:160], cooldown=120))
+        if re.search(r"COMMAND=/(?:usr/)?bin/(?:ba|z|da)?sh\b|COMMAND=/(?:usr/)?bin/su\b|sudo -i", msg):
+            out.append(self._fire("root_shell", ent, now, msg[:160], cooldown=120))
+        if re.search(r"new user: name=|useradd|adduser", msg) or eid == 4720:
+            out.append(self._fire("new_account", ent, now, msg[:160], cooldown=60))
+        if re.search(r"usermod.*-a?G.*(?:sudo|wheel|admin)|add '?\S+'? to group '?(?:sudo|wheel|admin)", msg) \
+                or eid in (4728, 4732, 4756):
+            out.append(self._fire("admin_group", ent, now, msg[:160], cooldown=60))
+        if eid in (1102, 104) or re.search(r"audit log was cleared|log file .* cleared", msg, re.I):
+            out.append(self._fire("log_cleared", ent, now, msg[:160], cooldown=60))
+        if eid in (1116, 1117):
+            out.append(self._fire("malware", ent, now, msg[:160], cooldown=60))
+        if eid in (7045, 4697):
+            out.append(self._fire("new_service", ent, now, msg[:160], cooldown=60))
+        return out

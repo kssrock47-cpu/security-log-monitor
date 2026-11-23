@@ -54,14 +54,20 @@ function demoNote() {
     : "";
 }
 
-const routes = { overview: viewOverview, alerts: viewAlerts, live: viewLive, accuracy: viewAccuracy, how: viewHow };
+const routes = { research: viewOverview, alerts: viewAlerts, replay: viewLive, accuracy: viewAccuracy, how: viewHow };
+const RESEARCH = new Set(Object.keys(routes));
+window.APP = { routes, api, post, esc, fmt, when, clockTime, techChip, $, $$, track, showTip, hideTip, S };
 async function route() {
   stopLive();
-  const [, name = "overview", arg] = location.hash.split("/");
+  if (window.MON && window.MON.leave) window.MON.leave();
+  const [, name = "monitor", arg] = location.hash.split("/");
+  const area = RESEARCH.has(name) ? "research" : "monitor";
+  document.body.dataset.area = area;
   $$("[data-nav]").forEach((a) => a.setAttribute("aria-current", a.dataset.nav === name ? "page" : "false"));
   const view = $("#view");
   view.innerHTML = `<p class="muted"><span class="spinner"></span>Loading…</p>`;
   try {
+    if (area === "monitor") { await (routes[name] || routes.monitor)(view, arg && decodeURIComponent(arg)); view.focus({ preventScroll: true }); return; }
     if (!S.state) await loadState();
     if (!S.state.has_data) { view.innerHTML = emptyState(); return; }
     await (routes[name] || viewOverview)(view, arg && decodeURIComponent(arg));
@@ -94,7 +100,7 @@ async function viewOverview(view) {
       </div>
       <div class="actions">
         <a class="btn primary" href="#/alerts">Review the alerts</a>
-        <a class="btn" href="#/live">Watch it live</a>
+        <a class="btn" href="#/replay">Replay it live</a>
       </div>
       <div>${techChip("Drain3 log parsing")} ${techChip("Isolation Forest")} ${techChip("Random Forest")} ${techChip("SQLite")}</div>
     </div>
@@ -360,7 +366,7 @@ document.addEventListener("keydown", (e) => {
 async function viewLive(view) {
   const o = S.overview || (S.overview = await api("/api/overview"));
   view.innerHTML = `${demoNote()}
-  <h1 style="font-size:36px">Watch it work live</h1>
+  <h1 style="font-size:36px">Replay the research log live</h1>
   <p class="lead" style="margin-top:10px">This replays the newer part of the log as if the lines were arriving right now. The detectors learned only from the older part, the ${fmt(o.n_train)} tasks before ${esc(when(o.test_start))}, so everything you see here is new to them.</p>
   <p class="muted small">Each line is sorted the moment it arrives. When a task has been quiet for ${o.live_wait_min === 1 ? "a minute" : `${o.live_wait_min} minutes`} of log time, the detectors check it and either let it pass or raise an alert.${o.live_wait_min > 1 ? " Real storage tasks can send their last messages several minutes late, so the monitor waits before judging." : ""} ${techChip("Server-sent events")} ${techChip("Drain3 match")} ${techChip("saved scikit-learn models")}</p>
   <div class="live-bar">
@@ -529,7 +535,7 @@ async function viewHow(view) {
   <div class="actions" style="margin-top:16px"><button class="btn" id="prevSt">Back</button><button class="btn primary" id="nextSt">Next stage</button></div>
   <section class="grid2" style="margin-top:30px">
     <div class="panel"><h3>Built with</h3><p class="muted" style="margin:6px 0 0">Python for the pipeline, Drain3 to sort log lines, scikit-learn for the two detectors, SQLite to store results, and FastAPI with plain HTML, CSS and JavaScript for this dashboard. Everything runs on one laptop, offline.</p></div>
-    <div class="panel"><h3>Not built yet</h3><p class="muted" style="margin:6px 0 0">Planned for FYP2: the full HDFS_v1 run and a second dataset (BGL), a deep sequence model, deeper per-alert explanations (SHAP), and learning from your reviews to improve over time.</p></div>
+    <div class="panel"><h3>Not built yet</h3><p class="muted" style="margin:6px 0 0">Planned for FYP2: a second research dataset (BGL), a deep sequence model, deeper per-alert explanations (SHAP), and learning from your reviews to improve over time.</p></div>
   </section>`;
   const cache = {};
   const load = async () => {
@@ -610,7 +616,7 @@ $("#runGo").addEventListener("click", async () => {
       st.textContent = "Done. Showing the new results.";
       S.overview = S.alerts = null; S.state = null; resetFilter();
       await loadState();
-      setTimeout(() => { $("#runDialog").close(); location.hash = "#/overview"; route(); }, 700);
+      setTimeout(() => { $("#runDialog").close(); location.hash = "#/research"; route(); }, 700);
     };
     poll();
   } catch (e) {
@@ -623,4 +629,6 @@ $("#techToggle").addEventListener("change", (e) => setTech(e.target.checked));
 try { setTech(localStorage.getItem("tech") === "1"); } catch (e) { setTech(false); }
 window.addEventListener("hashchange", route);
 let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (S.overview && $("#tl")) drawTimeline($("#tl"), S.overview.timeline, S.overview.bin_minutes); }, 200); });
-route();
+window.addEventListener("load", () => { if (window.MON && window.MON.boot) window.MON.boot(); route(); });
+window.APP.route = route;
+window.APP_GAUGE = gauge;
