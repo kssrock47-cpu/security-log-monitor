@@ -34,6 +34,15 @@ PORT = int(os.environ.get("SECLOG_PORT", "8600"))
 app = FastAPI(title="Security Log Monitor")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "web")), name="static")
 
+
+@app.middleware("http")
+async def always_fresh(request, call_next):
+    """Browsers re-check the page and its scripts each time, so an update shows up without clearing the cache."""
+    resp = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 RUN = {"state": "idle", "message": "", "started": None}
 MON = Monitor(os.path.join(HERE, "data", "monitor.db"), os.path.join(HERE, "data", "uploads"))
 _cache: dict = {}
