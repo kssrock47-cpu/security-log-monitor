@@ -78,17 +78,49 @@ class UploadSource(Source):
 
     def work(self):
         path = self.config["path"]
-        if path.lower().endswith(".evtx"):
+        low = path.lower()
+        if low.endswith(".evtx"):
             for line in _read_evtx(path):
                 if self.stop_flag.is_set():
                     return
                 self.emit(line)
             return
+        if low.endswith(".zip"):
+            self._zip(path)
+            return
+        if not low.endswith(".gz"):
+            with open(path, "rb") as fb:
+                head = fb.read(4096)
+            if b"\x00" in head:
+                raise ValueError("This isn't a text log file (it looks like a program, picture or other binary file). "
+                                 "Drop a text log such as .log, .txt, .json, .gz or a .zip of logs.")
         with _open_text(path) as f:
             for line in f:
                 if self.stop_flag.is_set():
                     return
                 self.emit(line)
+
+    def _zip(self, path):
+        """Read every text file inside a .zip, one after another; skip anything that isn't text."""
+        import io
+        import zipfile
+        read = 0
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                with z.open(info) as raw:
+                    if b"\x00" in raw.read(4096):
+                        continue
+                with z.open(info) as raw:
+                    read += 1
+                    self.last_line = f"Reading {info.filename} from the zip"
+                    for line in io.TextIOWrapper(raw, errors="replace"):
+                        if self.stop_flag.is_set():
+                            return
+                        self.emit(line)
+        if not read:
+            raise ValueError("The zip file has no text logs inside.")
 
 
 class WatchSource(Source):

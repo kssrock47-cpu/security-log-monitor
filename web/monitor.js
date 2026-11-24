@@ -509,7 +509,7 @@
     <p class="small" style="margin:0 0 30px">No logs to hand? Try real ones from the loghub research collection:
       <button class="btn small ghost" data-sample="ssh">SSH server under attack</button>
       <button class="btn small ghost" data-sample="linux">Linux system log</button>
-      <button class="btn small ghost" data-sample="apache">Apache web server</button></p>
+      <button class="btn small ghost" data-sample="apache">Apache web server (mostly harmless)</button></p>
     <h2>Your connections</h2>
     <div class="conns" id="conns" style="margin-top:14px"></div>`;
     wireTiles(view);
