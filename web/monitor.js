@@ -213,7 +213,8 @@
           <div><b id="cConn">0</b>live connections</div>
         </div>
         <div class="actions">
-          <a class="btn primary" href="#/connect">Connect logs</a>
+          <button class="btn primary" data-tour type="button">Take the guided demo</button>
+          <a class="btn" href="#/connect">Connect logs</a>
           <a class="btn" href="#/lab">Try the attack lab</a>
           <a class="btn ghost" href="#/threats">Review threats</a>
         </div>
