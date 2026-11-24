@@ -18,8 +18,16 @@ from datetime import datetime, timedelta, timezone
 MONTHS = {m: i for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
 
 RE_PRI = re.compile(r"^<\d{1,3}>(?:1 )?")
-RE_SYSLOG = re.compile(r"^(?P<mon>[A-Z][a-z]{2})\s+(?P<day>\d{1,2}) (?P<time>\d\d:\d\d:\d\d) (?P<host>\S+) "
+RE_SYSLOG = re.compile(r"^(?P<mon>[A-Z][a-z]{2})\s+(?P<day>\d{1,2}) (?P<time>\d\d:\d\d:\d\d) (?P<host>[^\s\[\]]*[^\s\[\]:]) "
                        r"(?P<app>[^\s:\[]+(?:\([^)]*\))?)(?:\[(?P<pid>\d+)\])?:? (?P<msg>.*)$")
+# syslog written straight to a file by a program, without the machine name (dnsmasq, openvpn, ...)
+RE_SYSLOG_NOHOST = re.compile(r"^(?P<mon>[A-Z][a-z]{2})\s+(?P<day>\d{1,2}) (?P<time>\d\d:\d\d:\d\d) "
+                              r"(?P<app>[\w./-]+)\[(?P<pid>\d+)\]: (?P<msg>.*)$")
+# Linux audit log (auditd): type=USER_AUTH msg=audit(1642723741.072:375): ... acct="root" ... res=failed
+RE_AUDIT = re.compile(r"^type=(?P<type>\S+) msg=audit\((?P<ts>\d+(?:\.\d+)?):\d+\):\s*(?P<rest>.*)$")
+RE_AUDIT_KV = re.compile(r'(\w+)=("[^"]*"|\S+)')
+# OpenVPN client lines: "2022-01-21 00:09:11 jhall/192.168.230.165:46011 TLS: ..."
+RE_VPN_PEER = re.compile(r"^(?P<user>[\w.@-]+)/(?P<ip>\d{1,3}(?:\.\d{1,3}){3}):\d+ ")
 RE_ISOSYS = re.compile(r"^(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?) (?P<host>\S+) "
                        r"(?P<app>[^\s:\[]+)(?:\[(?P<pid>\d+)\])?:? (?P<msg>.*)$")
 RE_ACCESS = re.compile(r'^(?P<ip>[\da-fA-F.:]+) \S+ (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)'
@@ -32,6 +40,7 @@ RE_ISOLINE = re.compile(r"^(?P<ts>\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(?:[.,]\d+)?)
 RE_IP = re.compile(r"(?<![\d.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?![\d.])")
 RE_IP_HINT = re.compile(r"(?:from|rhost=|SRC=|Source Network Address:\s*|client |ip=|addr=)\s*\[?([\d.]+)")
 RE_USER = [
+    re.compile(r"\[([\w.@-]+)\] Peer Connection Initiated"),  # OpenVPN
     re.compile(r"[Ff]ailed (?:password|publickey|none) for (?:invalid user )?(\S+)"),
     re.compile(r"Accepted (?:password|publickey|keyboard-interactive/pam) for (\S+)"),
     re.compile(r"[Ii]nvalid user (\S+)"),
@@ -46,7 +55,7 @@ FAIL = re.compile(r"[Ff]ailed password|authentication failure|(?i:log(?:in|on) (
                   r"account failed to log on|incorrect password|NOT in sudoers|Connection closed by authenticating user|"
                   r"maximum authentication attempts|Disconnecting: Too many authentication failures|BREAK-IN ATTEMPT")
 SUCCESS = re.compile(r"Accepted (?:password|publickey|keyboard)|session opened for user|successfully logged on|"
-                     r"An account was successfully logged on|Successful su")
+                     r"An account was successfully logged on|Successful su|Peer Connection Initiated")
 LEVEL_BAD = re.compile(r"\b(?:error|err|crit|critical|alert|emerg|fatal|fail(?:ed|ure)?|denied|refused|warn(?:ing)?)\b", re.I)
 
 # Windows event ids that matter for security, in plain words
@@ -148,6 +157,33 @@ def parse(line: str, now: datetime | None = None, hint_host: str | None = None) 
             return _enrich(ev)
         except (KeyError, ValueError):
             pass
+    m = RE_SYSLOG_NOHOST.match(s)
+    if m:
+        try:
+            dt = datetime(now.year, MONTHS[m["mon"]], int(m["day"]), *map(int, m["time"].split(":")))
+            ev.update(ts=_year_fix(dt, now), app=m["app"], msg=m["msg"], fmt="syslog")
+            ev = _enrich(ev)
+            if m["app"] == "dnsmasq" and not m["msg"].startswith("query["):
+                ev["src_ip"] = None  # replies name the address looked up, not the computer that asked
+            return ev
+        except (KeyError, ValueError):
+            pass
+    m = RE_AUDIT.match(s)
+    if m:
+        kv = {k: v.strip("\"'") for k, v in RE_AUDIT_KV.findall(m["rest"])}
+        typ, res = m["type"], kv.get("res", "")
+        user = kv.get("acct") or kv.get("UID") or kv.get("AUID")
+        exe = (kv.get("exe") or kv.get("comm") or "").rsplit("/", 1)[-1] or None
+        ev.update(ts=datetime.fromtimestamp(float(m["ts"])), app=exe or "audit", fmt="audit",
+                  user=None if user in (None, "?", "unset", "(unknown)") else user,
+                  msg=" ".join(x for x in (typ, f"user {user}" if user else "", exe or "", kv.get("op", ""), res) if x),
+                  level="warning" if res in ("failed", "no") else "info")
+        addr = kv.get("addr")
+        if addr and RE_IP.fullmatch(addr):
+            ev["src_ip"] = addr
+        if typ in ("USER_AUTH", "USER_LOGIN", "USER_ERR"):
+            ev["outcome"] = "fail" if res in ("failed", "no") else "success" if res in ("success", "yes") else None
+        return ev
     m = RE_ISOSYS.match(s)
     if m:
         ev.update(ts=_iso(m["ts"]), host=m["host"], app=m["app"], msg=m["msg"], fmt="syslog")
@@ -164,8 +200,8 @@ def parse(line: str, now: datetime | None = None, hint_host: str | None = None) 
         return ev
     m = RE_APERR.match(s)
     if m:
-        try:
-            ts = datetime.strptime(m["ts"].split(".")[0], "%a %b %d %H:%M:%S %Y")
+        try:  # "Mon Jan 24 03:57:26.696483 2022": drop the fraction of a second, keep the year
+            ts = datetime.strptime(re.sub(r"\.\d+", "", m["ts"]), "%a %b %d %H:%M:%S %Y")
         except ValueError:
             ts = None
         ev.update(ts=ts, level=m["level"].split(":")[-1], src_ip=m["ip"], msg=m["msg"], fmt="web-error", app="web")
@@ -182,6 +218,9 @@ def parse(line: str, now: datetime | None = None, hint_host: str | None = None) 
     m = RE_ISOLINE.match(s)
     if m:
         ev.update(ts=_iso(m["ts"]), level=(m["level"] or "").lower() or None, msg=m["msg"] or s, fmt="text")
+        v = RE_VPN_PEER.match(ev["msg"])
+        if v:
+            ev.update(user=v["user"], src_ip=v["ip"], app="openvpn")
         return _enrich(ev)
     ev["msg"] = s
     return _enrich(ev)

@@ -100,7 +100,7 @@ class Monitor:
         self.watermark: dict = {}
         self.pending = defaultdict(int)
         self.flushed: set = set()
-        self.miner = make_miner()
+        self.miner = make_miner(live=True)
         self.templates: dict = {}
         self.feed = deque(maxlen=4000)
         self.seq = 0

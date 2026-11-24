@@ -1,0 +1,253 @@
+{
+  "dataset": "AIT Log Data Set V2.0, scenario ait_russellmitchell",
+  "rules": "without the rules added after the first run",
+  "steps_detected": 6,
+  "steps": 12,
+  "attack_lines": 61813,
+  "attack_lines_covered": 15077,
+  "normal_lines": 234524,
+  "false_alarms": 16,
+  "false_alarms_per_1000_normal_lines": 0.068,
+  "per_step": [
+    {
+      "step": "Hidden-page scan (dirb)",
+      "label": "dirb",
+      "lines": 4493,
+      "lines_covered": 4470,
+      "line_recall": 0.995,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-access.log.2",
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-error.log.2"
+      ]
+    },
+    {
+      "step": "WordPress scan (WPScan)",
+      "label": "wpscan",
+      "lines": 3207,
+      "lines_covered": 3194,
+      "line_recall": 0.996,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-access.log.2",
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-error.log.2"
+      ]
+    },
+    {
+      "step": "Webshell upload",
+      "label": "webshell_upload",
+      "lines": 3,
+      "lines_covered": 3,
+      "line_recall": 1.0,
+      "detected": true,
+      "files": [
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-access.log.2"
+      ]
+    },
+    {
+      "step": "Commands through the webshell",
+      "label": "webshell_cmd",
+      "lines": 44,
+      "lines_covered": 32,
+      "line_recall": 0.727,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-access.log.2"
+      ]
+    },
+    {
+      "step": "Service scan (nmap)",
+      "label": "service_scan",
+      "lines": 455,
+      "lines_covered": 455,
+      "line_recall": 1.0,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-access.log.2"
+      ]
+    },
+    {
+      "step": "DNS brute-force scan",
+      "label": "dns_scan",
+      "lines": 414,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log"
+      ]
+    },
+    {
+      "step": "Network scan",
+      "label": "network_scan",
+      "lines": 92,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log"
+      ]
+    },
+    {
+      "step": "Attacker's VPN login",
+      "label": "attacker_vpn",
+      "lines": 28,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "vpn\\logs\\openvpn.log"
+      ]
+    },
+    {
+      "step": "Switching to another user",
+      "label": "attacker_change_user",
+      "lines": 8,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "intranet_server\\logs\\audit\\audit.log",
+        "intranet_server\\logs\\auth.log"
+      ]
+    },
+    {
+      "step": "Admin commands with sudo",
+      "label": "escalated_sudo_command",
+      "lines": 9,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "intranet_server\\logs\\audit\\audit.log",
+        "intranet_server\\logs\\auth.log"
+      ]
+    },
+    {
+      "step": "Data theft over DNS (DNSteal)",
+      "label": "dnsteal",
+      "lines": 53056,
+      "lines_covered": 6923,
+      "line_recall": 0.13,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "internal_share\\logs\\audit\\audit.log"
+      ]
+    },
+    {
+      "step": "foothold",
+      "label": "foothold",
+      "lines": 4,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log"
+      ]
+    }
+  ],
+  "per_file": [
+    {
+      "file": "inet-firewall\\logs\\dnsmasq.log",
+      "lines": 275900,
+      "attack_lines": 54035,
+      "normal_lines": 221865,
+      "alerts": 164,
+      "alerts_on_attacks": 151,
+      "false_alarms": 13,
+      "false_alarms_per_1000_normal_lines": 0.06,
+      "false_alarm_examples": [
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)"
+      ],
+      "seconds": 134.0
+    },
+    {
+      "file": "internal_share\\logs\\audit\\audit.log",
+      "lines": 732,
+      "attack_lines": 2,
+      "normal_lines": 730,
+      "alerts": 1,
+      "alerts_on_attacks": 0,
+      "false_alarms": 1,
+      "false_alarms_per_1000_normal_lines": 1.37,
+      "false_alarm_examples": [
+        "Unusual behaviour the AI hasn't seen before (host:systemd)"
+      ],
+      "seconds": 1.0
+    },
+    {
+      "file": "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-access.log.2",
+      "lines": 11184,
+      "attack_lines": 7695,
+      "normal_lines": 3489,
+      "alerts": 4,
+      "alerts_on_attacks": 3,
+      "false_alarms": 1,
+      "false_alarms_per_1000_normal_lines": 0.29,
+      "false_alarm_examples": [
+        "An automated attack tool is probing the website (172.19.131.174)"
+      ],
+      "seconds": 28.4
+    },
+    {
+      "file": "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-error.log.2",
+      "lines": 40,
+      "attack_lines": 36,
+      "normal_lines": 4,
+      "alerts": 0,
+      "alerts_on_attacks": 0,
+      "false_alarms": 0,
+      "false_alarms_per_1000_normal_lines": 0.0,
+      "false_alarm_examples": [],
+      "seconds": 1.0
+    },
+    {
+      "file": "intranet_server\\logs\\audit\\audit.log",
+      "lines": 2316,
+      "attack_lines": 9,
+      "normal_lines": 2307,
+      "alerts": 1,
+      "alerts_on_attacks": 0,
+      "false_alarms": 1,
+      "false_alarms_per_1000_normal_lines": 0.43,
+      "false_alarm_examples": [
+        "Unusual behaviour the AI hasn't seen before (host:systemd)"
+      ],
+      "seconds": 1.0
+    },
+    {
+      "file": "intranet_server\\logs\\auth.log",
+      "lines": 628,
+      "attack_lines": 8,
+      "normal_lines": 620,
+      "alerts": 0,
+      "alerts_on_attacks": 0,
+      "false_alarms": 0,
+      "false_alarms_per_1000_normal_lines": 0.0,
+      "false_alarm_examples": [],
+      "seconds": 1.0
+    },
+    {
+      "file": "vpn\\logs\\openvpn.log",
+      "lines": 5537,
+      "attack_lines": 28,
+      "normal_lines": 5509,
+      "alerts": 0,
+      "alerts_on_attacks": 0,
+      "false_alarms": 0,
+      "false_alarms_per_1000_normal_lines": 0.0,
+      "false_alarm_examples": [],
+      "seconds": 2.0
+    }
+  ],
+  "seconds": 191.3
+}

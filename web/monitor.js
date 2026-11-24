@@ -229,7 +229,7 @@
           <a class="btn" href="#/lab">Try the attack lab</a>
           <a class="btn ghost" href="#/threats">Review threats</a>
         </div>
-        <div>${techChip("Drain3 message types")} ${techChip("Isolation Forest per 30-second window")} ${techChip("17 attack patterns, MITRE ATT&CK")}</div>
+        <div>${techChip("Drain3 message types")} ${techChip("Isolation Forest per 30-second window")} ${techChip("23 attack patterns, MITRE ATT&CK")}</div>
       </div>
     </section>
     ${first ? `<section class="panel" style="margin-bottom:22px"><h3>Start by connecting some logs</h3>

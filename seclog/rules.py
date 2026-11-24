@@ -5,6 +5,7 @@ so a long attack becomes one alert with a growing count, not hundreds of alerts.
 MITRE ATT&CK ids are shown when "technical terms" is switched on.
 """
 import ipaddress
+import os
 import re
 from collections import Counter, defaultdict, deque
 from datetime import timedelta
@@ -20,6 +21,14 @@ def _outside_v4(ip):
         return False
     return a.version == 4 and not (a.is_private or a.is_loopback)
 
+# accounts that only websites run as; they never log in as people (Debian uid 33, Red Hat uid 48)
+WEB_ACCOUNTS = {"www-data", "apache", "nginx", "httpd", "wwwrun", "_www"}
+RE_SU = re.compile(r"Successful su for (\S+) by (\S+)|session opened for user (\S+) by \(uid=(\d+)\)")
+RE_SUDO_CMD = re.compile(r"^\s*(\S+) : .*COMMAND=(.*)$")
+RE_AUDIT_CMD = re.compile(r"\bcmd=([0-9A-Fa-f]{6,})")
+SECRET_FILES = re.compile(r"/etc/(?:shadow|gshadow|sudoers)\b|/\.ssh/|\bid_(?:rsa|ed25519|ecdsa)\b")
+# DNS lookups: dnsmasq "query[A] name from 1.2.3.4", BIND "query: name IN A"
+DNS_QUERY = re.compile(r"query\[(\w+)\] (\S+) from |query: (\S+) IN (\w+)")
 SQLI = re.compile(r"(?:%27|')\s*(?:or|and|union)\b|union(?:\s|%20|\+)+select|select(?:\s|%20|\+).+from|"
                   r"sleep\(|benchmark\(|information_schema|--(?:\s|%20|$)|/\*.*\*/", re.I)
 XSS = re.compile(r"<script|%3cscript|javascript:|onerror=|onload=|alert\(", re.I)
@@ -62,6 +71,28 @@ RULES = {
     "lockout": ("An account was locked after too many wrong passwords", "medium", "T1110 Brute Force",
                 "Find out who tried. If it wasn't the account owner, someone may be guessing its password."),
     # found by testing on the real loghub SSH server log: attackers who stay under the fast rule
+    # data hidden inside DNS names (MITRE T1048.003 / T1071.004). Thresholds follow common guidance for DNS tunnelling:
+    # a name over 100 characters or one part over 50 is very rare for normal sites.
+    "dns_tunnel": ("Data may be leaving through DNS lookups", "high",
+                   "T1048.003 Exfiltration Over Alternative Protocol (DNS)",
+                   "Very long, random-looking names are a known way to smuggle data out. Find the computer that asked "
+                   "and what runs on it, and block lookups to that domain at the DNS server or firewall."),
+    # added after the first AIT-LDS v2.0 run; each is a standard detection, with general (not tuned) thresholds
+    "web_account_switch": ("The website's account switched to another user", "high", "T1078 Valid Accounts / T1548 Abuse Elevation",
+                           "Website accounts never log in as people, so this usually means a webshell or a hacked website. "
+                           "Check recently uploaded or changed files under the web folder, and the account it switched to."),
+    "secret_files": ("Admin rights were used to read password or key files", "high",
+                     "T1003.008 OS Credential Dumping: /etc/passwd and /etc/shadow",
+                     "Reading /etc/shadow or SSH keys with admin rights is how attackers collect passwords. "
+                     "Find out who ran it; if it wasn't planned, change the passwords and keys on this machine."),
+    "dns_scan": ("Someone is guessing names in your domain (DNS scan)", "medium",
+                 "T1590.002 Gather Victim Network Information: DNS",
+                 "Trying many made-up names is how attackers map which servers exist. Check the computer that asked."),
+    "ptr_sweep": ("Someone is mapping your network with reverse lookups", "medium", "T1018 Remote System Discovery",
+                  "Looking up the names of many addresses one after another is a network sweep. Check the computer that asked."),
+    "new_place_login": ("An account logged in from a new address", "medium", "T1078 Valid Accounts",
+                        "This account always logged in from elsewhere before. If its owner didn't just change device or "
+                        "location, its password or certificate may be stolen."),
     "slow_guess": ("Someone is guessing passwords slowly, to stay under the radar", "medium",
                    "T1110.001 Brute Force: Password Guessing",
                    "Block this address. Guessing a few passwords an hour for days is deliberate; check that the "
@@ -83,7 +114,13 @@ class RuleEngine:
         self.oks = defaultdict(deque)          # ip -> times of successful logins, last 24 hours
         self.nets = defaultdict(deque)         # network (first two numbers) -> (time, ip), last 6 hours
         self.net_ips = defaultdict(Counter)    # network -> failures per address in that window (a running tally)
+        self.dns_long = defaultdict(deque)     # computer -> times of very long DNS lookups, last 5 minutes
+        self.dns_names = defaultdict(deque)    # (computer, domain) -> (time, name) of lookups, last minute
+        self.dns_ptr = defaultdict(deque)      # computer -> (time, name) of reverse lookups, last minute
+        self.user_places = defaultdict(Counter)  # user -> address -> successful logins
         self.last_fired = {}                   # (rule, entity) -> time
+        # for fair before/after evaluations: SECLOG_DISABLE_RULES=dns_tunnel,dns_scan,...
+        self.disabled = {r for r in os.environ.get("SECLOG_DISABLE_RULES", "").split(",") if r}
 
     @staticmethod
     def _trim(dq, now, secs):
@@ -138,6 +175,68 @@ class RuleEngine:
         ip = ev.get("src_ip")
         eid = ev.get("event_id")
 
+        # --- DNS: data hidden in very long lookups ---------------------------------
+        if ip and "query" in msg:
+            q = DNS_QUERY.search(msg)
+            if q:
+                qtype = q.group(1) or q.group(4) or ""
+                name = (q.group(2) or q.group(3)).rstrip(".").lower()
+                parts = name.split(".")
+                parent = (".".join(parts[1:]) if len(parts) > 2 else name) if qtype != "PTR" else "in-addr.arpa"
+                for dq_, kind, need, rule in ((self.dns_names[(ip, parent)], "", 50, "dns_scan"),
+                                              (self.dns_ptr[ip], "PTR", 20, "ptr_sweep")):
+                    if kind and qtype != kind:
+                        continue
+                    if not kind and qtype == "PTR":
+                        continue
+                    dq_.append((now, name))
+                    while dq_ and (now - dq_[0][0]).total_seconds() > 60:
+                        dq_.popleft()
+                    if len(dq_) >= need:
+                        names = {n for _, n in dq_}
+                        if len(names) >= need:
+                            out.append(self._fire(rule, ip, now, f"{len(names)} different names looked up in a minute, "
+                                                  f"for example {sorted(names)[0][:60]}"))
+                if len(name) > 100 or max((len(p) for p in name.split(".")), default=0) > 50:
+                    dq = self.dns_long[ip]
+                    dq.append(now)
+                    self._trim(dq, now, 300)
+                    if len(dq) >= 20:
+                        out.append(self._fire("dns_tunnel", ip, now, f"{len(dq)} very long DNS lookups in 5 minutes, "
+                                              f"for example {name[:60]}…"))
+
+        # --- a website's account becoming someone else (webshell) -------------------------
+        app = (ev.get("app") or "").lower()
+        if app == "su" or (ev["fmt"] == "audit" and "/su" in ev.get("raw", "")):
+            m_ = RE_SU.search(msg)
+            by = target = None
+            if m_:
+                target, by = (m_.group(1), m_.group(2)) if m_.group(1) else (m_.group(3), m_.group(4))
+            elif ev["fmt"] == "audit":
+                u = re.search(r"\buid=(\d+)", ev["raw"])
+                by, target = (u.group(1) if u else None), ev.get("user")
+            if by in WEB_ACCOUNTS or by in ("33", "48"):
+                out.append(self._fire("web_account_switch", "user:www-data" if by in ("33", "48") else f"user:{by}", now,
+                                      f"The website's account switched to the user {target}"))
+        # --- admin rights used on password or key files -----------------------------------
+        cmd = None
+        if app == "sudo":
+            m_ = RE_SUDO_CMD.search(msg)
+            if m_:
+                cmd, sudo_user = m_.group(2), m_.group(1)
+        elif ev["fmt"] == "audit" and "USER_CMD" in ev.get("raw", ""):
+            m_ = RE_AUDIT_CMD.search(ev["raw"])
+            if m_:
+                try:
+                    cmd = bytes.fromhex(m_.group(1)).decode("utf-8", "replace")
+                except ValueError:
+                    cmd = None
+                u = re.search(r"\bauid=(\d+)|\buid=(\d+)", ev["raw"])
+                sudo_user = ev.get("user") or (u and (u.group(1) or u.group(2)))
+        if cmd and SECRET_FILES.search(cmd):
+            out.append(self._fire("secret_files", f"user:{sudo_user}" if sudo_user else ent, now,
+                                  f"Ran with admin rights: {cmd[:120]}"))
+
         # --- logins ---------------------------------------------------------------
         if ev.get("outcome") == "fail" and ev["fmt"] != "web" and (ip or ev.get("user")):
             k = ip or ent
@@ -156,6 +255,13 @@ class RuleEngine:
                                           f"for example {', '.join(sorted(users)[:4])}"))
         if ev.get("outcome") == "fail" and ev["fmt"] != "web" and ip:
             out += self._slow_and_spread(ip, now)
+        if ev.get("outcome") == "success" and ip and ev.get("user"):
+            places = self.user_places[ev["user"]]
+            if ip not in places and sum(places.values()) >= 5:
+                out.append(self._fire("new_place_login", f"user:{ev['user']}", now,
+                                      f"Logged in from {ip}; before, only from {', '.join(list(places)[:3])}",
+                                      cooldown=3600))
+            places[ip] += 1
         if ev.get("outcome") == "success" and ip:
             self.oks[ip].append(now)
             self._trim(self.oks[ip], now, 86400)
@@ -214,4 +320,6 @@ class RuleEngine:
             out.append(self._fire("malware", ent, now, msg[:160], cooldown=60))
         if eid in (7045, 4697):
             out.append(self._fire("new_service", ent, now, msg[:160], cooldown=60))
+        if self.disabled:
+            out = [h for h in out if h and h["rule"] not in self.disabled]
         return out

@@ -24,7 +24,7 @@ class LogEvent:
     content: str
 
 
-def make_miner() -> TemplateMiner:
+def make_miner(live: bool = False) -> TemplateMiner:
     cfg = TemplateMinerConfig()
     # Everything that varies is masked first, so a strict similarity (0.9) can keep
     # near-identical but different messages apart (e.g. "terminating" vs "Interrupted").
@@ -37,6 +37,16 @@ def make_miner() -> TemplateMiner:
         MaskingInstruction(r"(?<![\w])/(?:[\w.\-]+/)+[\w.\-]*", "PATH"),
         MaskingInstruction(r"((?<=[^A-Za-z0-9])|^)(\d+)((?=[^A-Za-z0-9])|$)", "NUM"),
     ]
+    if live:
+        # Live monitor only (the HDFS research results keep the masks above). Found on the AIT-LDS DNS log:
+        # data stolen over DNS turns every lookup into a new random name, and each one became a new message
+        # type, slowing everything down. Long random strings and domain names are masked first, and the number
+        # of message types is capped (least used are forgotten).
+        cfg.masking_instructions[2:2] = [
+            MaskingInstruction(r"(?<![\w*/+=.-])[\w*/+=.-]{30,}(?![\w*/+=.-])", "LONG"),
+            MaskingInstruction(r"(?<![\w.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?![\w.-])", "HOST"),
+        ]
+        cfg.drain_max_clusters = 5000
     return TemplateMiner(config=cfg)
 
 

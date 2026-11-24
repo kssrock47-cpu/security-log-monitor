@@ -15,10 +15,10 @@ It takes security logs from anywhere, watches them live or checks them offline, 
   * receive syslog from routers, servers and other PCs
   * read this PC's Windows Event Log
   * use the built-in attack lab
-* **Reads:** Linux syslog and auth.log (SSH, sudo, useradd, firewall), Apache and Nginx web logs, Windows events (live or `.evtx`), JSON lines, HDFS and plain text.
+* **Reads:** Linux syslog and auth.log (SSH, sudo, useradd, firewall), Linux audit logs, DNS server logs (dnsmasq, BIND), OpenVPN, Apache and Nginx web and error logs, Windows events (live or `.evtx`), JSON lines, HDFS and plain text; also `.gz` and `.zip` files.
 * **Finds threats two ways:**
   * **AI:** an Isolation Forest learns what normal looks like for each address or user over 30-second windows, then flags anything unusual.
-  * **Known attack patterns:** 17 patterns, including password guessing (fast, slow, and spread over a network), password spraying, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
+  * **Known attack patterns:** 23 patterns, including password guessing (fast, slow, and spread over a network), password spraying, DNS tunnelling and DNS scans, a website account switching user, admin rights used on password files, logins from a new address, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
 * **Learns and adapts** in three ways:
   * It learns normal behaviour when a connection starts. For a file you drop in, it first reads the whole file, learns what is normal for that file, then judges every part of it (offline mode).
   * It re-learns normal every few minutes, so it keeps up as things change.
@@ -128,6 +128,30 @@ Testing on it showed two weaknesses, which were then fixed and measured again on
 * **Alert fatigue:** a long attack raised a new alert every 5 minutes. Now an ongoing attack updates its open alert for as long as it continues (until a person marks it).
 * No successful break-in was found. 66 alerts came from the AI. The 3 addresses still missed spread fewer than 20 attempts over each day.
 
+**AIT Log Data Set V2.0** (scenario russellmitchell: a simulated company with real attack tools; every attack line is labelled with its step; https://zenodo.org/records/5789064). `python -m seclog.evaluate ait <folder>` feeds each labelled log (with its older rotated days first) through the monitor and scores it.
+Testing on it first meant teaching the monitor four formats it misread (dnsmasq, Linux audit, Apache error timestamps, OpenVPN users) and masking random DNS names, which had slowed message sorting to a crawl.
+
+| | First run | After adding 6 standard rules |
+|---|---|---|
+| Attack steps detected | 6 of 12 | **10 of 12** |
+| Attack lines inside an alert | 15,077 of 61,813 | 19,390 of 61,813 |
+| False alarms | 16 in 234,524 normal lines (0.07 per 1,000) | 16 (unchanged) |
+
+Caught: dirb and WPScan scans (100% of lines), webshell upload (100%), webshell commands (73%), nmap service scan (100%), DNS name guessing (100%), the website account switching user, sudo reading /etc/shadow, data theft over DNS.
+Missed: a reverse-lookup network sweep (too spread out for the rule) and the attacker's VPN login with a stolen certificate (the account had too few earlier logins to compare with).
+The 6 rules were added after the first run, so this scenario is no longer a fair test of them; each is a standard detection with general thresholds (DNS tunnelling, website account using su, sudo on /etc/shadow, DNS name guessing, reverse-lookup sweep, login from a new address). **The fair check is another AIT-LDS scenario not looked at during development (planned).**
+
+**LANL Comprehensive Multi-Source Cyber-Security Events** (58 days of real logins from Los Alamos National Laboratory, with real red-team compromises; https://csr.lanl.gov/data/cyber1/). `python -m seclog.evaluate lanl auth.txt.gz redteam.txt.gz` learns where each account logs in during the first 40 hours, then alerts when an account reaches k new computers within 24 hours. 500 million login lines were read in 18 minutes.
+
+| k new computers in 24 h | Red-team logins caught | Red-team accounts caught | Alerts per day |
+|---|---|---|---|
+| 1 | 77% (541 of 701) | 70 of 104 | 1,947 |
+| 2 | 65% | 51 of 104 | 1,179 |
+| 3 | 57% | 43 of 104 | 638 |
+| 5 | 43% | 29 of 104 | 296 |
+
+The simple "new place" signal finds most of the red team but is far too noisy for a person to use on its own; ranking these alerts with machine learning is planned for FYP2.
+
 ## What is real and what is not
 
 * `data/sample/demo_hdfs_style.log` and `demo_labels.csv` are **made up** by `seclog/make_demo.py`, built to look like HDFS logs. They show how the monitor works. **Numbers on them are not research results.**
@@ -154,7 +178,7 @@ Testing on it showed two weaknesses, which were then fixed and measured again on
     seclog/live.py       live replay: parse and check tasks as lines arrive
     seclog/make_demo.py  generates the made-up demo log
     seclog/formats.py    reads many log formats into one shape
-    seclog/rules.py      17 known attack patterns (MITRE ATT&CK)
+    seclog/rules.py      23 known attack patterns (MITRE ATT&CK)
     seclog/evaluate.py   evaluation on real and labelled datasets (loghub SSH, LANL, AIT-LDS)
     seclog/ai.py         live AI: per-address windows, Isolation Forest, plain reasons
     seclog/learning.py   learning from people's answers (feedback loop)
@@ -170,7 +194,7 @@ Testing on it showed two weaknesses, which were then fixed and measured again on
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               33 tests (python -m pytest)
+    tests/               36 tests (python -m pytest)
 
 ## Credits
 

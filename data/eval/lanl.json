@@ -1,0 +1,51 @@
+{
+  "dataset": "LANL Comprehensive Multi-Source Cyber-Security Events (real enterprise, red-team labels)",
+  "auth": "C:\\Users\\USER\\Downloads\\ABDM\\Compressed\\auth.txt.gz",
+  "lines_read": 519368230,
+  "people_logins": 176251725,
+  "learning_hours": 40,
+  "days_checked": 28.9,
+  "seconds": 1090.7,
+  "results": [
+    {
+      "new_destinations_in_24h": 1,
+      "alerts": 56315,
+      "alerts_per_day": 1946.7,
+      "red_events_caught": 541,
+      "red_events": 701,
+      "recall": 0.772,
+      "red_accounts_caught": 70,
+      "red_accounts": 104
+    },
+    {
+      "new_destinations_in_24h": 2,
+      "alerts": 34119,
+      "alerts_per_day": 1179.4,
+      "red_events_caught": 459,
+      "red_events": 701,
+      "recall": 0.655,
+      "red_accounts_caught": 51,
+      "red_accounts": 104
+    },
+    {
+      "new_destinations_in_24h": 3,
+      "alerts": 18445,
+      "alerts_per_day": 637.6,
+      "red_events_caught": 400,
+      "red_events": 701,
+      "recall": 0.571,
+      "red_accounts_caught": 43,
+      "red_accounts": 104
+    },
+    {
+      "new_destinations_in_24h": 5,
+      "alerts": 8549,
+      "alerts_per_day": 295.5,
+      "red_events_caught": 302,
+      "red_events": 701,
+      "recall": 0.431,
+      "red_accounts_caught": 29,
+      "red_accounts": 104
+    }
+  ]
+}

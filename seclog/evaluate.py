@@ -91,6 +91,153 @@ def ssh(path):
     return data
 
 
+# ---------------------------------------------------------------- 2. AIT-LDS v2.0: labelled attack steps
+# Generic tags are skipped so each line is counted under the attack step it belongs to.
+AIT_STEPS = ["dirb", "wpscan", "webshell_upload", "webshell_cmd", "service_scan", "dns_scan", "network_scan",
+             "attacker_vpn", "attacker_change_user", "escalated_sudo_command", "escalated_command", "dnsteal"]
+AIT_NAMES = {"dirb": "Hidden-page scan (dirb)", "wpscan": "WordPress scan (WPScan)", "webshell_upload": "Webshell upload",
+             "webshell_cmd": "Commands through the webshell", "service_scan": "Service scan (nmap)",
+             "dns_scan": "DNS brute-force scan", "network_scan": "Network scan", "attacker_vpn": "Attacker's VPN login",
+             "attacker_change_user": "Switching to another user", "escalated_sudo_command": "Admin commands with sudo",
+             "escalated_command": "Admin commands", "dnsteal": "Data theft over DNS (DNSteal)",
+             "foothold": "Other attacker activity"}
+
+
+def _ait_step(labels):
+    for s_ in AIT_STEPS:
+        if s_ in labels:
+            return s_
+    return sorted(labels)[0]
+
+
+def _siblings(path):
+    """A log and its rotated older copies, oldest first: x.log.4, x.log.3, ..., x.log.1, x.log."""
+    import glob
+    import re as _re
+    base = _re.sub(r"\.\d+$", "", path)
+    files = [f for f in glob.glob(glob.escape(base) + "*") if f == base or _re.fullmatch(_re.escape(base) + r"\.\d+", f)]
+    num = lambda f: int(f.rsplit(".", 1)[1]) if f != base else 0
+    return sorted(files, key=num, reverse=True)
+
+
+AIT_NEW_RULES = "dns_tunnel,web_account_switch,secret_files,dns_scan,ptr_sweep,new_place_login"
+
+
+def ait(root, slack=60, baseline=False):
+    """root: the folder with gather/ and labels/ from one AIT-LDS v2.0 scenario (e.g. russellmitchell)."""
+    import glob
+    from datetime import timedelta
+    from . import formats
+    name = "ait_baseline" if baseline else "ait"
+    if baseline:  # the rules added after looking at the first run are switched off
+        os.environ["SECLOG_DISABLE_RULES"] = AIT_NEW_RULES
+    m = fresh_monitor(name)
+    feeds = os.path.join(OUT, name, "feeds")
+    os.makedirs(feeds, exist_ok=True)
+    labelled = [f for f in glob.glob(os.path.join(root, "labels", "**", "*"), recursive=True)
+                if os.path.isfile(f) and "monitoring" not in f]
+    per_file, steps = [], defaultdict(lambda: {"lines": 0, "covered": 0, "files": set()})
+    t_start = time.time()
+    for lab in sorted(labelled):
+        rel = os.path.relpath(lab, os.path.join(root, "labels"))
+        target = os.path.join(root, "gather", rel)
+        if not os.path.exists(target):
+            continue
+        # feed the rotated older days first, so the AI sees normal days before the attack day
+        parts = _siblings(target)
+        feed = os.path.join(feeds, rel.replace(os.sep, "__"))
+        offset, lines = 0, []
+        for f in parts:
+            with open(f, errors="replace") as fh:
+                chunk = fh.read().splitlines()
+            if f == target:
+                offset = len(lines)
+            lines += chunk
+        with open(feed, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        labels = {}
+        with open(lab) as fh:
+            for row in fh:
+                d = json.loads(row)
+                labels[offset + d["line"] - 1] = set(d["labels"])
+        print(f"{rel}: {len(lines):,} lines ({len(parts)} file{'s' if len(parts) > 1 else ''}), {len(labels):,} attack lines")
+        sid, secs = run_file(m, feed, rel)
+        alerts = [a for a in m.alerts(100000) if a["source"] == sid]
+        windows = defaultdict(list)
+        for a in alerts:
+            windows[a["entity"]].append([datetime_(a["first_ts"]) - timedelta(seconds=slack),
+                                         datetime_(a["last_ts"]) + timedelta(seconds=slack), a, False])
+        all_windows = [w for ws in windows.values() for w in ws]
+        host_windows = [w for e, ws in windows.items() if not _named(e) for w in ws]
+        # which lines did an alert cover? (same address or user, inside the alert's time span)
+        now = datetime_now()
+        normal_lines = 0
+        for i, line in enumerate(lines):
+            ev = formats.parse(line, now)
+            if ev is None:
+                continue
+            ent, ts = formats.entity(ev), ev["ts"]
+            hits = []
+            if ts is not None:
+                # a line that names an address or user is matched to alerts about that address or user;
+                # a line that names neither (e.g. a DNS reply) is matched by time, to any alert in this log
+                pool = windows.get(ent, []) + host_windows if _named(ent) else all_windows
+                hits = [w for w in pool if w[0] <= ts <= w[1]]
+            if i in labels:
+                st = steps[_ait_step(labels[i])]
+                st["lines"] += 1
+                st["files"].add(rel)
+                if hits:
+                    st["covered"] += 1
+                    for w in hits:  # every alert that overlaps the attack counts as a true alert
+                        w[3] = True
+            else:
+                normal_lines += 1
+        true_alerts = sum(1 for ws in windows.values() for w in ws if w[3])
+        false = [w[2] for ws in windows.values() for w in ws if not w[3]]
+        per_file.append({"file": rel, "lines": len(lines), "attack_lines": len(labels), "normal_lines": normal_lines,
+                         "alerts": len(alerts), "alerts_on_attacks": true_alerts, "false_alarms": len(false),
+                         "false_alarms_per_1000_normal_lines": round(1000 * len(false) / max(normal_lines, 1), 2),
+                         "false_alarm_examples": [f"{a['title']} ({a['entity']})" for a in false[:5]],
+                         "seconds": round(secs, 1)})
+        print(f"  alerts {len(alerts)}: {true_alerts} on the attack, {len(false)} false alarms")
+    table = []
+    for k in sorted(steps, key=lambda s_: AIT_STEPS.index(s_) if s_ in AIT_STEPS else 99):
+        v = steps[k]
+        table.append({"step": AIT_NAMES.get(k, k), "label": k, "lines": v["lines"], "lines_covered": v["covered"],
+                      "line_recall": round(v["covered"] / max(v["lines"], 1), 3), "detected": v["covered"] > 0,
+                      "files": sorted(v["files"])})
+    normal = sum(f["normal_lines"] for f in per_file)
+    false = sum(f["false_alarms"] for f in per_file)
+    data = {"dataset": "AIT Log Data Set V2.0, scenario " + os.path.basename(os.path.normpath(root)),
+            "rules": "without the rules added after the first run" if baseline else "all rules",
+            "steps_detected": sum(t["detected"] for t in table), "steps": len(table),
+            "attack_lines": sum(t["lines"] for t in table), "attack_lines_covered": sum(t["lines_covered"] for t in table),
+            "normal_lines": normal, "false_alarms": false,
+            "false_alarms_per_1000_normal_lines": round(1000 * false / max(normal, 1), 3),
+            "per_step": table, "per_file": per_file, "seconds": round(time.time() - t_start, 1)}
+    print("\nAttack step                          detected   lines covered")
+    for t in table:
+        print(f"  {t['step'][:34]:34s} {'yes' if t['detected'] else 'NO ':3s}       {t['lines_covered']:,} of {t['lines']:,} ({t['line_recall']:.0%})")
+    print(f"False alarms: {false} over {normal:,} normal lines = {data['false_alarms_per_1000_normal_lines']} per 1,000")
+    save(name, data)
+    return data
+
+
+def _named(ent):
+    return insight.is_ip(ent) or ent.startswith("user:")
+
+
+def datetime_(iso):
+    from datetime import datetime
+    return datetime.fromisoformat(iso)
+
+
+def datetime_now():
+    from datetime import datetime
+    return datetime.now()
+
+
 # ---------------------------------------------------------------- 3. LANL: real enterprise logins, real red-team labels
 def lanl(auth_path, red_path, train_hours=40, settings=(1, 2, 3, 5), stop_after_days=1.0):
     """Lateral movement: an account logging in to computers it has never logged in to before.
@@ -177,6 +324,9 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("ssh")
     s.add_argument("path")
+    s = sub.add_parser("ait")
+    s.add_argument("root")
+    s.add_argument("--baseline", action="store_true", help="switch off the rules added after the first run")
     s = sub.add_parser("lanl")
     s.add_argument("auth")
     s.add_argument("redteam")
@@ -184,6 +334,8 @@ def main():
     a = ap.parse_args()
     if a.cmd == "ssh":
         ssh(a.path)
+    elif a.cmd == "ait":
+        ait(a.root, baseline=a.baseline)
     elif a.cmd == "lanl":
         lanl(a.auth, a.redteam, a.train_hours)
 

@@ -115,7 +115,7 @@ RULE_STAGE = {
     "priv_fail": "admin", "root_shell": "admin", "admin_group": "admin",
     "new_account": "stay", "new_service": "stay",
     "log_cleared": "hide",
-    "malware": "harm",
+    "malware": "harm", "dns_tunnel": "harm",
 }
 AI_FEATURE_STAGE = {"failures": "creds", "users": "creds", "ports": "recon", "not_found": "recon"}
 

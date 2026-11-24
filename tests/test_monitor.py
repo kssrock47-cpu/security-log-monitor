@@ -151,3 +151,50 @@ def test_slow_and_distributed_guessing():
                      f"Nov 20 {i // 4:02d}:{(i % 4) * 15:02d}:05 h sshd[1]: Accepted password for bob from 10.0.0.12 port 1 ssh2"):
             hits3 += r3.check(formats.parse(line), "10.0.0.12")
     assert not hits3
+
+
+def test_reads_formats_found_in_ait_lds():
+    """Formats from the AIT-LDS v2.0 testbed that the monitor misread before."""
+    ev = formats.parse("Jan 21 00:00:09 dnsmasq[3468]: query[A] www.example.org from 10.143.0.103")
+    assert (ev["app"], ev["src_ip"], ev["ts"].hour) == ("dnsmasq", "10.143.0.103", 0)
+    ev = formats.parse("Jan 21 00:00:31 dnsmasq[3468]: reply www.example.org is 195.128.194.168")
+    assert ev["src_ip"] is None  # the looked-up address is not the computer that asked
+    ev = formats.parse("[Mon Jan 24 03:57:26.696483 2022] [authz_core:error] [pid 25711] [client 172.19.131.174:36072] "
+                       "AH01630: client denied by server configuration: /var/www/x/.hta")
+    assert ev["ts"].year == 2022 and ev["src_ip"] == "172.19.131.174"
+    ev = formats.parse("type=USER_AUTH msg=audit(1642995460.540:997): pid=1 uid=0 auid=1001 ses=3 "
+                       "msg='op=PAM:authentication acct=\"jhall\" exe=\"/usr/bin/su\" hostname=? addr=? terminal=pts/0 res=failed'")
+    assert (ev["fmt"], ev["user"], ev["outcome"], ev["app"]) == ("audit", "jhall", "fail", "su")
+    ev = formats.parse("2022-01-21 00:09:11 jhall/192.168.230.165:46011 TLS: soft reset sec=3308/3308")
+    assert (ev["user"], ev["src_ip"]) == ("jhall", "192.168.230.165")
+
+
+def test_dns_tunnel_rule():
+    r, hits = RuleEngine(), []
+    for i in range(25):
+        ev = formats.parse(f"Jan 24 04:00:{i:02d} dnsmasq[3468]: query[A] {'a' * 55}{i}.data.{'b' * 40}.example.com from 10.1.2.3")
+        hits += r.check(ev, "10.1.2.3")
+    assert [h["rule"] for h in hits if not h["update"]] == ["dns_tunnel"]
+    r2 = RuleEngine()
+    for i in range(50):  # ordinary lookups never trigger it
+        ev = formats.parse(f"Jan 24 04:00:{i:02d} dnsmasq[3468]: query[AAAA] www.site{i}.com from 10.1.2.3")
+        assert not r2.check(ev, "10.1.2.3")
+
+
+def test_rules_added_after_ait_lds():
+    """Standard detections added after the first AIT-LDS run (general thresholds, not tuned to it)."""
+    from datetime import datetime
+    def run(lines):
+        r, hits = RuleEngine(), []
+        for l in lines:
+            ev = formats.parse(l)
+            hits += r.check(ev, formats.entity(ev))
+        return {h["rule"] for h in hits if not h["update"]}
+    assert "web_account_switch" in run(["Jan 24 04:37:40 web su[27950]: Successful su for jhall by www-data"])
+    assert "secret_files" in run(["Jan 24 04:38:06 web sudo:    jhall : TTY=pts/1 ; PWD=/tmp ; USER=root ; COMMAND=/bin/cat /etc/shadow"])
+    assert not run(["Jan 24 04:38:06 web sudo:    bob : TTY=pts/1 ; PWD=/tmp ; USER=root ; COMMAND=/usr/bin/apt update"])
+    assert "dns_scan" in run([f"Jan 24 03:01:{i % 60:02d} dnsmasq[1]: query[A] {i:04x}guess.example.com from 10.9.0.10" for i in range(55)])
+    assert "ptr_sweep" in run([f"Jan 24 03:02:{i:02d} dnsmasq[1]: query[PTR] {i}.0.143.10.in-addr.arpa from 10.9.0.10" for i in range(25)])
+    vpn = [f"2022-01-2{d} 0{d}:00:00 192.168.230.165:4600{d} [jhall] Peer Connection Initiated with [AF_INET]192.168.230.165:4600{d}" for d in range(6)]
+    assert "new_place_login" in run(vpn + ["2022-01-24 03:01:00 192.168.230.122:53581 [jhall] Peer Connection Initiated with [AF_INET]192.168.230.122:53581"])
+    assert not run(vpn)
