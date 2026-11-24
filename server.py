@@ -15,11 +15,11 @@ from datetime import datetime
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from seclog import pipeline, plain
+from seclog import insight, pipeline, plain, report
 from seclog.live import LiveEngine
 from seclog.monitor import Monitor
 from seclog.simulator import ATTACKS
@@ -530,7 +530,71 @@ def m_alert(aid: int):
     d = MON.alert_detail(aid)
     if not d:
         raise HTTPException(404, "No such alert.")
+    ent = d["entity"]
+    d["story"] = MON.story(ent, aid)
+    d["geo"] = insight.locate(ent) if insight.is_ip(ent) else None
+    d["blocked"] = next((b for b in MON.block_list() if b["entity"] == ent), None)
+    d["can_block"] = insight.is_ip(ent) and not insight.allowlisted(ent)
+    d["allowlisted"] = insight.is_ip(ent) and insight.allowlisted(ent)
+    d["risk"] = insight.risk(MON._alert_times(ent).get(ent, []), 0, time.time())
     return d
+
+
+@app.get("/api/m/alerts/{aid}/report.pdf")
+def m_alert_report(aid: int):
+    d = MON.alert_detail(aid)
+    if not d:
+        raise HTTPException(404, "No such alert.")
+    blocked = next((b for b in MON.block_list() if b["entity"] == d["entity"]), None)
+    pdf = report.build(d, MON.story(d["entity"], aid), MON.entity_profile(d["entity"]), blocked)
+    name = f"threat-{aid}-report-{datetime.now():%Y%m%d-%H%M}.pdf"
+    return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/m/entity")
+def m_entity(e: str):
+    d = MON.entity_profile(e)
+    if not d:
+        raise HTTPException(404, "Nothing has been seen from this address or user.")
+    return d
+
+
+@app.get("/api/m/map")
+def m_map(minutes: int = 60):
+    return MON.map_data(minutes)
+
+
+class BlockReq(BaseModel):
+    entity: str
+    minutes: int = 30
+    alert_id: int | None = None
+
+
+@app.post("/api/m/block")
+def m_block(b: BlockReq):
+    try:
+        return MON.block(b.entity, max(1, min(b.minutes, 1440)), b.alert_id)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/m/unblock")
+def m_unblock(b: BlockReq):
+    MON.unblock(b.entity)
+    return {"ok": True}
+
+
+@app.get("/api/m/blocks")
+def m_blocks():
+    return MON.block_list()
+
+
+@app.post("/api/m/clear")
+def m_clear():
+    MON.clear()
+    return {"ok": True}
 
 
 class Status(BaseModel):
@@ -592,7 +656,10 @@ def m_lab():
     sim = MON.simulator()
     return {"running": bool(sim), "ready": bool(sim and sim.sim.ready),
             "catalog": [{"kind": k, "name": v[0], "text": v[1]} for k, v in ATTACKS.items()],
-            "attacks": [{**a, "now": time.time()} for a in (sim.sim.attacks if sim else [])][:50]}
+            "attacks": [{**a, "now": time.time(), "missed": not a["detected"] and time.time() > (a["ends"] or 0) + 45,
+                         "blocked": a["ip"] in sim.sim.blocked,
+                         "stopped": a["total"] - a["sent"] if a["blocked_at"] else 0}
+                        for a in (sim.sim.attacks if sim else [])][:50]}
 
 
 @app.post("/api/m/lab/start")

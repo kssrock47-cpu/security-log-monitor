@@ -14,7 +14,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
-from . import formats
+from . import formats, insight
 from .ai import WindowAI
 from .learning import Learner
 from .parse import make_miner
@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY, created TEXT, first_t
 CREATE TABLE IF NOT EXISTS lessons (id INTEGER PRIMARY KEY, created TEXT, alert_id INTEGER, label TEXT, text TEXT);
 CREATE TABLE IF NOT EXISTS memory (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY, template TEXT);
+CREATE TABLE IF NOT EXISTS blocks (entity TEXT PRIMARY KEY, created REAL, until REAL, alert_id INTEGER, mode TEXT);
+CREATE INDEX IF NOT EXISTS ev_entity2 ON events(entity, ts);
+CREATE INDEX IF NOT EXISTS al_entity ON alerts(entity);
 """
 
 PLAIN = [
@@ -108,6 +111,7 @@ class Monitor:
         self.recent_rate = deque(maxlen=50)
         self.total = 0
         self.started = time.time()
+        self.blocks = {r[0]: r[1] for r in self._rows("select entity, until from blocks where until>?", (time.time(),))}
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._ticker, daemon=True).start()
         for r in self._rows("select id, kind, name, config from sources where enabled=1 and kind!='upload'"):
@@ -247,8 +251,17 @@ class Monitor:
         return self.buckets[-1]
 
     # ---------------------------------------------------------------- alerts
+    def is_blocked(self, ent):
+        until = self.blocks.get(ent)
+        if until and until <= time.time():
+            self.blocks.pop(ent, None)
+            return False
+        return bool(until)
+
     def _rule_alert(self, sid, hit, ev):
         ts = ev["ts"].isoformat(timespec="seconds")
+        if self.is_blocked(hit["entity"]):
+            return  # already blocked: its traffic is being dropped, no need to raise it again
         if self.learner.muted(hit["rule"], hit["entity"]):
             if not hit["update"]:
                 self.learner.count("avoided")  # a person said this one was a false alarm before
@@ -267,6 +280,8 @@ class Monitor:
     def _ai_alerts(self, sid, results):
         for r in results:
             ent = r["entity"]
+            if self.is_blocked(ent):
+                continue
             start = r["start"].isoformat(timespec="seconds")
             end = (r["start"] + timedelta(seconds=30)).isoformat(timespec="seconds")
             recent = self._rows("select id from alerts where source_id=? and entity=? and kind='ai' and last_ts>=?",
@@ -484,7 +499,21 @@ class Monitor:
         lessons = [dict(zip(["created", "alert_id", "label", "text"], r)) for r in
                    self._rows("select created, alert_id, label, text from lessons order by id desc limit 60")]
         learned = [self.alert_brief(r[0]) for r in self._rows("select id from alerts where learned=1 order by id desc limit 10")]
-        return {**self.learner.view(), "connections": conns, "lessons": lessons, "learned_alerts": learned}
+        # before and after teaching: the lab's sneaky thefts, split by the first time a person said "real"
+        first_real = self._one("select min(created) from lessons where label='real'")
+        t_real = self._epoch(first_real) if first_real else None
+        sim = self.simulator()
+        runs = []
+        for a in reversed(sim.sim.attacks if sim else []):
+            if a["kind"] != "sneaky_theft":
+                continue
+            missed = not a["detected"] and time.time() > (a["ends"] or 0) + 45
+            runs.append({"launched": a["launched"], "detected": a["detected"], "by": a["by"], "alert_id": a["alert_id"],
+                         "caught_in": round(a["detected"] - a["launched"], 1) if a["detected"] else None,
+                         "missed": missed, "running": not a["detected"] and not missed,
+                         "after": bool(t_real and a["launched"] > t_real)})
+        return {**self.learner.view(), "connections": conns, "lessons": lessons, "learned_alerts": learned,
+                "taught_at": t_real, "sneaky_runs": runs}
 
     def reset_learning(self):
         self.learner.reset()
@@ -498,7 +527,200 @@ class Monitor:
         cut = time.time() - minutes * 60
         items = [(k, v) for k, v in self.entities.items() if v["last"] >= cut]
         items.sort(key=lambda kv: (-(SEV_W.get(kv[1]["sev"], 0)), -kv[1]["events"]))
-        return [{"entity": k, **v} for k, v in items[:top]]
+        alerts = self._alert_times()
+        now = time.time()
+        out = []
+        for k, v in items[:top]:
+            r = insight.risk(alerts.get(k, []), v["fails"], now)
+            out.append({"entity": k, **v, "risk": r, "band": insight.band(r)[0], "blocked": self.is_blocked(k)})
+        return out
+
+    @staticmethod
+    def _epoch(iso):
+        return datetime.fromisoformat(iso).timestamp()
+
+    def _alert_times(self, entity=None, hours=12):
+        cut = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
+        sql, params = "select entity, created, severity, status from alerts where created>=?", (cut,)
+        if entity:
+            sql, params = sql + " and entity=?", (cut, entity)
+        out = defaultdict(list)
+        for e, c, sev, st in self._rows(sql, params):
+            out[e].append((self._epoch(c), sev, st))
+        return out
+
+    # ---------------------------------------------------------------- map, profiles, attack stories
+    def map_data(self, minutes=60):
+        pts, countries = [], {}
+        for e in self.entity_list(minutes, top=600):
+            if not insight.is_ip(e["entity"]):
+                continue
+            g = insight.locate(e["entity"])
+            p = {"entity": e["entity"], "cc": g["cc"], "country": g["country"], "internal": g["internal"],
+                 "events": e["events"], "fails": e["fails"], "alerts": e["alerts"], "sev": e["sev"],
+                 "risk": e["risk"], "band": e["band"], "blocked": e["blocked"]}
+            pts.append(p)
+            c = countries.setdefault(g["country"] or "Unknown", {"country": g["country"] or "Unknown", "cc": g["cc"],
+                                                                  "addresses": 0, "events": 0, "threats": 0, "risk": 0})
+            c["addresses"] += 1
+            c["events"] += e["events"]
+            c["threats"] += e["alerts"]
+            c["risk"] = max(c["risk"], e["risk"])
+        cl = sorted(countries.values(), key=lambda c: (-c["threats"], -c["risk"], -c["events"]))
+        return {"home": insight.HOME, "points": pts, "countries": cl}
+
+    def story(self, ent, alert_id=None):
+        """The attack story: which steps of an attack this address or user (and the accounts it used) reached."""
+        self._flush_events()
+        related = {ent}
+        if insight.is_ip(ent):
+            related |= {f"user:{u}" for (u,) in self._rows(
+                "select distinct user from events where src_ip=? and outcome='success' and user is not null", (ent,))}
+        elif ent.startswith("user:"):
+            related |= {ip for (ip,) in self._rows(
+                "select distinct src_ip from events where user=? and outcome='success' and src_ip is not null", (ent[5:],))}
+        cols = "id, created, first_ts, kind, rule, severity, title, features, status, entity"
+        if alert_id:
+            c = self._one("select created from alerts where id=?", (alert_id,))
+            centre = [self._epoch(c)] if c else []
+        else:
+            centre = [self._epoch(c) for (c,) in self._rows(
+                "select created from alerts where entity=? and status!='false'", (ent,))]
+        if not centre:
+            return {"stages": [dict(zip(("key", "name", "desc", "tactic", "code"), s), alerts=[]) for s in insight.STAGES],
+                    "reached": 0, "summary": None, "verdict": None, "entities": []}
+        lo = datetime.fromtimestamp(min(centre) - 1800).isoformat(timespec="seconds")
+        hi = datetime.fromtimestamp(max(centre) + 1800).isoformat(timespec="seconds")
+        qs = ",".join("?" * len(related))
+        rows = self._rows(f"select {cols} from alerts where entity in ({qs}) and created between ? and ? "
+                          "and status!='false' order by first_ts", (*related, lo, hi))
+        stages = [dict(zip(("key", "name", "desc", "tactic", "code"), s), alerts=[]) for s in insight.STAGES]
+        times = []
+        for aid, created, first_ts, kind, rule, sev, title, feats, status, e in rows:
+            st = insight.stage_of(kind, rule, json.loads(feats or "[]"))
+            stages[insight.STAGE_IX[st]]["alerts"].append({"id": aid, "title": title, "entity": e, "severity": sev,
+                                                          "time": first_ts, "current": aid == alert_id, "rule": rule})
+            times.append(self._epoch(first_ts))
+        reached = [s for s in stages if s["alerts"]]
+        if not reached:
+            return {"stages": stages, "reached": 0, "summary": None, "verdict": None, "entities": []}
+        span = max(times) - min(times)
+        summary = f"{len(reached)} of {len(stages)} attack steps seen: " + ", then ".join(s["name"].lower() for s in reached)
+        summary += f", over {insight.secs_text(span)}." if span >= 1 else "."
+        far = max(insight.STAGE_IX[s["key"]] for s in reached)
+        got_in = any(a["rule"] == "break_in" for s in reached for a in s["alerts"])
+        verdict = {0: "So far it is only looking around.", 1: "It is trying to get in. No sign it got in yet.",
+                   2: "It got in." if got_in else "It tried to break in.",
+                   3: "It got in and became an administrator.", 4: "It got in and set up a way to come back.",
+                   5: "It got in and tried to hide its tracks.",
+                   6: "No break-in steps came before it, so it probably used ordinary access, such as the public website."
+                   if len(reached) == 1 else "It got as far as taking data or doing harm."}[far]
+        ents = sorted({a["entity"] for s in stages for a in s["alerts"]})
+        return {"stages": stages, "reached": len(reached), "summary": summary, "verdict": verdict, "entities": ents,
+                "furthest": stages[far]["name"]}
+
+    def entity_profile(self, ent):
+        self._flush_events()
+        n, fails, first, last = self._rows("select count(*), coalesce(sum(outcome='fail'),0), min(ts), max(ts) "
+                                           "from events where entity=?", (ent,))[0]
+        ids = [r[0] for r in self._rows("select id from alerts where entity=? order by id desc limit 200", (ent,))]
+        if not n and not ids:
+            return None
+        now = time.time()
+        times = self._alert_times(ent, hours=48).get(ent, [])
+        mem = self.entities.get(ent)
+        score = insight.risk(times, mem["fails"] if mem else min(fails, 25), now)
+        trend = [insight.risk(times, 0, now - (12 - i) * 300) for i in range(12)] + [score]
+        srcs = [r[0] for r in self._rows("select distinct s.name from events e join sources s on s.id=e.source_id "
+                                         "where e.entity=? limit 6", (ent,))]
+        used = []
+        if insight.is_ip(ent):
+            used = [f"user:{r[0]}" for r in self._rows("select user, count(*) n from events where src_ip=? and user is not null "
+                                                       "group by user order by n desc limit 8", (ent,))]
+        elif ent.startswith("user:"):
+            used = [r[0] for r in self._rows("select src_ip, count(*) n from events where user=? and src_ip is not null "
+                                               "group by src_ip order by n desc limit 8", (ent[5:],))]
+        act = []
+        if last:
+            t_last = datetime.fromisoformat(last)
+            t0 = t_last - timedelta(minutes=29, seconds=t_last.second)
+            buckets = [{"events": 0, "fails": 0} for _ in range(30)]
+            for ts, outcome in self._rows("select ts, outcome from events where entity=? and ts>=?",
+                                          (ent, t0.isoformat(timespec="seconds"))):
+                i = int((datetime.fromisoformat(ts) - t0).total_seconds() // 60)
+                if 0 <= i < 30:
+                    buckets[i]["events"] += 1
+                    buckets[i]["fails"] += outcome == "fail"
+            act = {"start": t0.isoformat(timespec="seconds"), "minutes": buckets}
+        lines = []
+        for i, ts, fmt, outcome, level, raw in self._rows("select id, ts, fmt, outcome, level, raw from events where entity=? "
+                                                          "order by id desc limit 25", (ent,)):
+            ev = formats.parse(raw) or {"msg": raw, "status": None}
+            lines.append({"id": i, "time": ts, "raw": raw, "bad": outcome == "fail" or (level or "") in ("warning", "error", "crit", "critical"),
+                          "plain": plain_line(fmt, ev["msg"], ev.get("status")) or ev["msg"][:120]})
+        geo = insight.locate(ent) if insight.is_ip(ent) else None
+        blk = self._rows("select created, until, mode from blocks where entity=? and until>?", (ent, now))
+        return {"entity": ent, "kind": "ip" if insight.is_ip(ent) else ent.split(":")[0], "geo": geo,
+                "risk": score, "band": insight.band(score)[0], "band_text": insight.band(score)[1], "trend": trend,
+                "events": n, "fails": fails, "first_seen": first, "last_seen": last, "sources": srcs, "used": used,
+                "activity": act, "alerts": [self.alert_brief(i) for i in ids], "story": self.story(ent), "lines": lines[::-1],
+                "blocked": {"created": blk[0][0], "until": blk[0][1], "mode": blk[0][2]} if blk else None,
+                "can_block": insight.is_ip(ent) and not insight.allowlisted(ent)}
+
+    # ---------------------------------------------------------------- responding: block an address
+    def block(self, ent, minutes=30, alert_id=None):
+        if not insight.is_ip(ent):
+            raise ValueError("Only an address can be blocked. For a user account, lock the account on the server.")
+        if insight.allowlisted(ent):
+            raise PermissionError(f"{ent} is inside your own network, so it is on the allowlist and isn't blocked. "
+                                  "This stops the monitor from locking out your own machines.")
+        until = time.time() + minutes * 60
+        sim = self.simulator()
+        in_lab = bool(sim and sim.sim.block(ent))
+        mode = "lab" if in_lab else "simulated"
+        self._exec("insert or replace into blocks values (?,?,?,?,?)", (ent, time.time(), until, alert_id, mode))
+        self.blocks[ent] = until
+        e = self.entities.get(ent)
+        if e:
+            e["last"] = time.time()
+        text = (f"Blocked in the attack lab for {minutes} minutes. The lab firewall now drops everything from {ent}."
+                if in_lab else
+                f"Marked as blocked for {minutes} minutes. In this prototype the block is simulated; the next version "
+                "adds a real firewall rule (Windows Firewall or iptables).")
+        self._push("block", {"entity": ent, "until": until, "mode": mode, "text": text})
+        return {"entity": ent, "until": until, "mode": mode, "text": text}
+
+    def unblock(self, ent):
+        self._exec("delete from blocks where entity=?", (ent,))
+        self.blocks.pop(ent, None)
+        sim = self.simulator()
+        if sim:
+            sim.sim.unblock(ent)
+        self._push("unblock", {"entity": ent})
+
+    def block_list(self):
+        now = time.time()
+        return [dict(zip(("entity", "created", "until", "alert_id", "mode"), r)) for r in
+                self._rows("select entity, created, until, alert_id, mode from blocks where until>? order by created desc", (now,))]
+
+    # ---------------------------------------------------------------- clear the slate (keeps what the AI learned)
+    def clear(self):
+        self._flush_events()
+        with self.dbl:
+            self.con.execute("delete from alerts")
+            self.con.execute("delete from events")
+            self.con.execute("delete from blocks")
+            self.con.execute("update lessons set alert_id=NULL")
+            self.con.commit()
+        self.entities.clear()
+        self.buckets.clear()
+        self.blocks.clear()
+        for sid in list(self.rules):
+            self.rules[sid] = RuleEngine()
+        sim = self.simulator()
+        if sim:
+            sim.sim.reset_history()
+        self._push("cleared", {})
 
     def save_upload(self, name, stream_iter):
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(name or "upload.log"))[:80] or "upload.log"

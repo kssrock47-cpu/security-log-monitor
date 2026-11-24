@@ -11,6 +11,7 @@
   const clock = (iso) => (iso || "").slice(11, 19);
   const day = (iso) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   const every = (fn, ms) => { fn(); M.timers.push(setInterval(fn, ms)); };
+  const entLink = (e, text) => `<a class="entlink" href="#/entity/${encodeURIComponent(e)}">${esc(text || who(e))}</a>`;
   const KIND = {
     upload: ["A file you dropped", "Checked once, as fast as possible"],
     watch: ["A file or folder on this PC", "Followed as new lines are written"],
@@ -46,6 +47,7 @@
     setupDrop();
     // browsers only allow sound after a click, so the switch itself starts the audio
     $("#soundBtn").addEventListener("click", () => setSound(!SOUND.on, true));
+    $("#presentBtn").addEventListener("click", () => window.INSIGHT && window.INSIGHT.present());
     if (SOUND.on) {
       setSound(true, false);
       const wake = () => { if (SOUND.ctx && SOUND.ctx.state === "suspended") SOUND.ctx.resume(); };
@@ -53,7 +55,7 @@
       window.addEventListener("keydown", wake, { once: true });
     }
   };
-  M.leave = () => { M.timers.forEach(clearInterval); M.timers = []; M.page = null; hideTip(); };
+  M.leave = () => { M.timers.forEach(clearInterval); M.timers = []; M.page = null; hideTip(); document.body.classList.remove("present"); };
 
   function onFeed(d) {
     M.seq = d.seq || M.seq;
@@ -61,6 +63,7 @@
     d.events.forEach((e) => M.river.push(e));
     if (M.river.length > 60) M.river.splice(0, M.river.length - 60);
     if (M.page === "monitor") drawRiver();
+    if (M.page === "present" && M.presentFeed) M.presentFeed(d);
     if (d.alerts.length) {
       const top = d.alerts.reduce((m, a) => (RANK[a.severity] > RANK[m] ? a.severity : m), "low");
       playAlert(top);
@@ -82,6 +85,11 @@
         if (M.page === "ai") routes.ai($("#view"));
       } else if (n.kind === "learned") {
         note("The AI has learned what normal looks like", "From now on it flags anything unusual.");
+      } else if (n.kind === "block") {
+        note(`Blocked ${n.entity}`, n.text, `#/entity/${encodeURIComponent(n.entity)}`);
+      } else if (n.kind === "cleared") {
+        M.alerts = []; M.list = []; M.river = [];
+        if (M.page === "monitor") { drawThreatCards(); drawRiver(); }
       }
     });
   }
@@ -99,6 +107,7 @@
     bar.hidden = !s.open_alerts || M.page === "threats";
     $("#reviewText").textContent = `${fmt(s.open_alerts)} threat${s.open_alerts === 1 ? "" : "s"} waiting for you to review`;
     if (M.page === "monitor") updateHome();
+    if (M.page === "present" && M.presentStats) M.presentStats(s);
   }
 
   /* ---------------------------------------------------------------- alert sounds (made in the browser, no files) */
@@ -188,6 +197,7 @@
     if (M.page === "connect") renderConns();
   }
   M.uploadFiles = uploadFiles;
+  Object.assign(M, { who, note, every, clock, day, SEV, entLink, applyStats, drawRadarInto: (sel) => drawRadar(sel) });
 
   /* ================================================================ 1. live monitor (home) */
   routes.monitor = async (view) => {
@@ -297,11 +307,11 @@
 
   function hashAngle(s) { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return ((h >>> 0) % 3600) / 10; }
 
-  async function drawRadar() {
-    const svg = $("#radar"); if (!svg) return;
+  async function drawRadar(sel = "#radar") {
+    const svg = $(typeof sel === "string" ? sel : "#radar"); if (!svg) return;
     const ents = await api("/api/m/entities?minutes=15").catch(() => []);
-    if (!$("#radar")) return;
-    $("#blipCount").textContent = `${ents.length} active`;
+    if (!document.body.contains(svg)) return;
+    if ($("#blipCount")) $("#blipCount").textContent = `${ents.length} active`;
     let g = `<defs><linearGradient id="sw" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2e8b62" stop-opacity="0"/><stop offset="1" stop-color="#2e8b62" stop-opacity=".45"/></linearGradient></defs>`;
     [50, 100, 150, 190].forEach((r) => (g += `<circle class="ring" cx="200" cy="200" r="${r}"/>`));
     g += `<line class="axis" x1="10" y1="200" x2="390" y2="200"/><line class="axis" x1="200" y1="10" x2="200" y2="390"/>`;
@@ -316,7 +326,7 @@
       const size = 3 + Math.min(6, Math.log2(1 + e.events));
       const cls = e.sev === "critical" || e.sev === "high" ? e.sev : e.sev ? "medium" : "ok";
       if (cls === "high" || cls === "critical") g += `<circle class="halo" cx="${x}" cy="${y}" r="${size + 2}"/>`;
-      g += `<circle class="blip ${cls}" cx="${x}" cy="${y}" r="${size}" data-e="${esc(e.entity)}" data-tip="${esc(`${who(e.entity)}: ${fmt(e.events)} lines, ${e.fails} failures, ${e.alerts} threat${e.alerts === 1 ? "" : "s"}`)}"/>`;
+      g += `<circle class="blip ${cls}" cx="${x}" cy="${y}" r="${size}" data-e="${esc(e.entity)}" data-tip="${esc(`${who(e.entity)}: risk ${e.risk} of 100, ${fmt(e.events)} lines, ${e.fails} failures, ${e.alerts} threat${e.alerts === 1 ? "" : "s"}${e.blocked ? ", blocked" : ""}. Click for details.`)}"/>`;
       if (e.sev && labels.length < 4 && labels.every(([lx, ly]) => Math.abs(lx - x) > 90 || Math.abs(ly - y) > 16)) {
         labels.push([x, y]);
         g += `<text x="${x + size + 4}" y="${y + 4}">${esc(who(e.entity))}</text>`;
@@ -327,7 +337,7 @@
     $$(".blip", svg).forEach((b) => {
       b.addEventListener("mousemove", (ev) => showTip(ev, b.dataset.tip));
       b.addEventListener("mouseleave", hideTip);
-      b.addEventListener("click", () => { M.filter = { ...M.filter, entity: b.dataset.e, status: "all", sev: "all" }; location.hash = "#/threats"; });
+      b.addEventListener("click", () => { hideTip(); location.hash = `#/entity/${encodeURIComponent(b.dataset.e)}`; });
     });
   }
 
@@ -349,12 +359,19 @@
           </div>
           <div class="kind-filter" id="tkf" hidden></div>
         </div>
-        <div class="count-line" id="tcount"></div>
+        <div class="count-line"><span id="tcount"></span><button class="linkbtn" id="tclear" type="button">Clear all threats</button></div>
         <div class="items" id="titems"></div>
       </aside>
       <section class="detail" id="tdetail"></section>
     </div>`;
     $("#tq").addEventListener("input", (e) => { M.filter.q = e.target.value; renderThreatList(); });
+    const clr = $("#tclear");
+    clr.addEventListener("click", async () => {
+      if (clr.dataset.sure !== "1") { clr.dataset.sure = "1"; clr.textContent = "Click again to clear everything"; clr.classList.add("warn"); return; }
+      await post("/api/m/clear");
+      note("Cleared", "All threats and activity are gone. What the AI learned stays.");
+      M.list = []; routes.threats(view);
+    });
     $$("[data-st]").forEach((b) => b.addEventListener("click", () => { M.filter.status = b.dataset.st; renderThreatList(); }));
     $$("[data-k]").forEach((b) => b.addEventListener("click", () => { M.filter.kind = b.dataset.k; renderThreatList(); }));
     renderThreatList();
@@ -409,13 +426,15 @@
         </div>
         <h2>${esc(d.title)}</h2>
         <div class="facts">
-          <div><b>${esc(who(d.entity))}</b>who</div>
+          <div><b>${entLink(d.entity)}</b>who</div>
+          ${d.geo ? `<div><b>${esc(d.geo.country || "Unknown")}</b>where</div>` : ""}
           <div><b>${esc(d.source_name || "")}</b>from</div>
           <div><b>${esc(day(d.first_ts))}</b>when, in the log</div>
           <div><b>${d.count}×</b>${d.count > 1 ? "it kept happening" : "seen once"}</div>
         </div>
       </div>
-      <div class="panel">
+      ${window.INSIGHT ? window.INSIGHT.storyPanel(d.story, d.id) : ""}
+      <div class="panel what-panel">
         <h3>What happened</h3>
         <p style="margin:8px 0 0">${esc(d.detail)}</p>
         ${ai ? `<h3 style="margin-top:16px">Why the AI flagged it</h3>
@@ -424,9 +443,10 @@
           ${d.score != null && d.score >= d.threshold ? `<div class="gauges">${window.APP_GAUGE({ model: "Isolation Forest", score: d.score, threshold: d.threshold })}</div>`
             : `<p class="muted small" style="margin:8px 0 0">Some of these numbers were far beyond anything it saw while learning, which is enough on its own to raise an alert.</p>`}` : ""}
       </div>
-      <div class="panel">
+      <div class="panel todo-panel">
         <h3>What to do now</h3>
         <p style="margin:8px 0 0">${esc(d.advice || "")}</p>
+        <div class="respond" id="respond">${window.INSIGHT ? window.INSIGHT.respondHtml(d) : ""}</div>
         <h3 style="margin-top:18px">Is it a real threat?</h3>
         <p class="muted small" style="margin:4px 0 0">Your answer teaches the AI. Real threats make it more watchful of this kind of behaviour; false alarms make it calmer.</p>
         <div class="actbar" style="margin-top:12px">
@@ -447,6 +467,7 @@
         || `<div class="logrow"><span>No lines kept for this one.</span></div>`;
     };
     show("plain");
+    if (window.INSIGHT) window.INSIGHT.wireRespond($("#tdetail"), d, () => openThreat(id));
     $$("#tdetail [data-show]").forEach((b) => b.addEventListener("click", () => show(b.dataset.show)));
     $$("#tdetail [data-s]").forEach((b) => b.addEventListener("click", async () => {
       const s = b.dataset.s === d.status ? "new" : b.dataset.s;
@@ -602,6 +623,7 @@
       <div><b>${st.avoided}</b><span>false alarms it avoided thanks to you</span></div>
       <div><b>${v.connections.reduce((n, c) => n + c.retrains, 0)}</b><span>times it re-learned normal</span></div>
     </div>
+    ${window.INSIGHT ? window.INSIGHT.teachPanel(v) : ""}
     <section class="grid2">
       <div class="panel">
         <h3>How watchful it is right now</h3>
@@ -620,7 +642,7 @@
         <div class="panel">
           <h3>What it learned from you</h3>
           <div class="lessons">${v.lessons.map((l) => `<div class="lesson"><span class="chip ${l.label === "real" ? "first" : "ok"}">${label[l.label]}</span>
-            <span>${esc(l.text)}</span><a class="small" href="#/threats/${l.alert_id}">the alert</a></div>`).join("")
+            <span>${esc(l.text)}</span>${l.alert_id ? `<a class="small" href="#/threats/${l.alert_id}">the alert</a>` : "<span></span>"}</div>`).join("")
             || `<div class="empty">Nothing yet. Open a threat and tell it whether it was real. <a href="#/threats">Go to threats</a></div>`}</div>
         </div>
         <div class="panel">
@@ -711,17 +733,30 @@
     $$("[data-state]").forEach((el) => {
       const x = latest[el.dataset.state];
       if (!x) { el.textContent = ""; el.className = "state"; return; }
+      const still = x.now < x.ends + 1 && !x.blocked;
+      const blockBtn = still && x.detected ? ` <button class="btn small danger" data-block="${esc(x.ip)}" type="button">Block ${esc(x.ip)}</button>` : "";
+      const stopped = x.blocked_at ? ` Blocked: ${x.stopped} of ${x.total} requests stopped.` : "";
       if (x.detected) {
         el.className = "state caught";
-        el.textContent = `Caught in ${(x.detected - x.launched).toFixed(1)} s by ${x.by === "AI" ? "the AI" : "a known pattern"}`;
+        el.innerHTML = `Caught in ${(x.detected - x.launched).toFixed(1)} s by ${x.by === "AI" ? "the AI" : "a known pattern"}.${esc(stopped)}${blockBtn}`;
         if (!M.flashed.has(x.id)) { M.flashed.add(x.id); const card = el.closest(".attack"); card.classList.remove("caught-flash"); void card.offsetWidth; card.classList.add("caught-flash"); }
+      } else if (x.blocked_at) {
+        el.className = "state caught"; el.textContent = `Stopped by your block.${stopped}`;
+      } else if (x.missed) {
+        el.className = "state missed"; el.textContent = "Got through: not caught";
       } else {
         el.className = "state wait";
         el.textContent = `Running from ${x.ip}… ${(x.now - x.launched).toFixed(0)} s`;
       }
     });
-    $("#hist").innerHTML = a.map((x) => `<div><span><b>${esc(x.name)}</b> from ${esc(x.ip)}, ${new Date(x.launched * 1000).toLocaleTimeString("en-GB")}</span>
-      ${x.detected ? `<a class="ok" href="#/threats/${x.alert_id}">Caught in ${(x.detected - x.launched).toFixed(1)} s by ${x.by === "AI" ? "the AI" : "a known pattern"}</a>` : `<span class="no">Not caught yet</span>`}</div>`).join("")
+    $("#hist").innerHTML = a.map((x) => `<div><span><b>${esc(x.name)}</b> from ${entLink(x.ip, x.ip)}, ${new Date(x.launched * 1000).toLocaleTimeString("en-GB")}${x.blocked_at ? `. <b>Blocked</b>, ${x.stopped} of ${x.total} requests stopped` : ""}</span>
+      ${x.detected ? `<a class="ok" href="#/threats/${x.alert_id}">Caught in ${(x.detected - x.launched).toFixed(1)} s by ${x.by === "AI" ? "the AI" : "a known pattern"}</a>`
+        : x.blocked_at ? `<span class="ok">Stopped by your block</span>` : x.missed ? `<span class="no missed">Got through</span>` : `<span class="no">Not caught yet</span>`}</div>`).join("")
       || `<div><span class="muted">No attacks yet. Launch one above.</span></div>`;
+    $$("[data-block]").forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await post("/api/m/block", { entity: b.dataset.block }); } catch (e) { note("Couldn't block", e.message); }
+      pollLab();
+    }));
   }
 })();

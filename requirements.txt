@@ -6,4 +6,6 @@ joblib>=1.3
 fastapi>=0.110
 uvicorn>=0.27
 httpx>=0.27
+geoip2fast>=1.2
+fpdf2>=2.7
 pytest>=7.0

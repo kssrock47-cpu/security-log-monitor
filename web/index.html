@@ -25,6 +25,7 @@
     <div class="navgroup">
       <span class="navlabel">Monitor</span>
       <a href="#/monitor" data-nav="monitor"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M10 10 L15.5 4.5"/></svg>Live monitor</a>
+      <a href="#/map" data-nav="map"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="M2.5 10h15M10 2.5c2.2 2.2 3 4.8 3 7.5s-.8 5.3-3 7.5c-2.2-2.2-3-4.8-3-7.5s.8-5.3 3-7.5z"/></svg>Attack map</a>
       <a href="#/threats" data-nav="threats"><svg viewBox="0 0 20 20"><path d="M10 2.5 L18 16.5 H2 Z"/><path d="M10 8v4M10 14.2v.3"/></svg>Threats<span class="badge" id="threatBadge" hidden></span></a>
       <a href="#/connect" data-nav="connect"><svg viewBox="0 0 20 20"><path d="M7 13 L13 7"/><path d="M8.5 5.5 L10.5 3.5 a3.2 3.2 0 0 1 4.5 4.5 L13 10"/><path d="M11.5 14.5 L9.5 16.5 a3.2 3.2 0 0 1 -4.5 -4.5 L7 10"/></svg>Connect logs</a>
       <a href="#/ai" data-nav="ai"><svg viewBox="0 0 20 20"><path d="M7.5 3.5a3 3 0 0 0-3 3 3 3 0 0 0-1 5.5 3 3 0 0 0 3.5 4.5 2.5 2.5 0 0 0 3 0V4.5a2 2 0 0 0-2.5-1z"/><path d="M12.5 3.5a3 3 0 0 1 3 3 3 3 0 0 1 1 5.5 3 3 0 0 1-3.5 4.5 2.5 2.5 0 0 1-3 0"/><path d="M10 8h2M10 12h2.5"/></svg>AI learning</a>
@@ -55,9 +56,11 @@
       <button class="btn small ghost only-monitor sound-btn" id="soundBtn" type="button" aria-pressed="false" title="Play a sound when a threat is found">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5h3l4-3.5v12l-4-3.5H3z"/><path class="wave" d="M13 7a4 4 0 0 1 0 6M15.5 4.5a7.5 7.5 0 0 1 0 11"/><path class="mute" d="M13.5 7.5l5 5M18.5 7.5l-5 5"/></svg>
         <span>Sound off</span></button>
-      <label class="toggle"><input type="checkbox" id="techToggle"> Show technical terms</label>
+      <button class="btn small ghost only-monitor present-btn" id="presentBtn" type="button" title="Full screen view for a projector">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="10" rx="1.5"/><path d="M7 17h6M10 13.5V17"/></svg><span>Present</span></button>
+      <label class="toggle"><input type="checkbox" id="techToggle"> <span class="tlabel">Show technical terms</span></label>
       <button class="btn small ghost only-research" id="runBtn" type="button">Re-run the HDFS check</button>
-      <label class="btn small primary only-monitor" for="filePick">Drop or choose a log file</label>
+      <label class="btn small primary only-monitor" for="filePick"><span class="long">Drop or choose a log file</span><span class="short">Add a log file</span></label>
       <input type="file" id="filePick" multiple hidden>
     </header>
     <a class="reviewbar only-monitor" id="reviewBar" href="#/threats" hidden><span class="sev critical"></span><span id="reviewText"></span><b>Review now</b></a>
@@ -97,6 +100,8 @@
 <div class="tip" id="tip" role="tooltip"></div>
 <script src="/static/app.js"></script>
 <script src="/static/monitor.js"></script>
+<script src="/static/world.js"></script>
+<script src="/static/insight.js"></script>
 <script src="/static/tour.js"></script>
 </body>
 </html>

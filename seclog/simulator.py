@@ -42,8 +42,16 @@ ATTACKS = {
 }
 
 
+# attackers come from the usual places on the internet (Germany, Russia, Romania, Netherlands, Lithuania, China, US)
+BAD_NETS = ["185.220.101.", "45.155.205.", "193.32.162.", "103.145.13.", "141.98.11.", "218.92.0.", "167.94.138."]
+# the company is in Malaysia, so most visitors are local, with some from the region and further away
+VISITOR_NETS = [("175.139.", 5), ("60.50.", 4), ("115.133.", 4), ("113.210.", 3), ("121.122.", 3), ("219.92.", 2),
+                ("118.200.", 2), ("116.86.", 1), ("36.68.", 2), ("114.124.", 1), ("73.20.", 1), ("24.20.", 1),
+                ("86.20.", 1), ("1.120.", 1), ("49.36.", 1)]
+
+
 def _bad_ip(r):
-    return random.choice(["185.220.101.", "45.155.205.", "193.32.162.", "103.145.13.", "141.98.11."]) + str(r.randint(2, 250))
+    return r.choice(BAD_NETS) + str(r.randint(2, 250))
 
 
 class Simulator:
@@ -58,8 +66,10 @@ class Simulator:
         self.stop_flag = threading.Event()
         self.ready = False  # True once the history has been written
         self.tz = datetime.now().astimezone().strftime("%z")
-        self.visitors = [f"{self.r.choice([60, 115, 175, 202, 210])}.{self.r.randint(1, 250)}.{self.r.randint(1, 250)}.{self.r.randint(1, 250)}"
-                         for _ in range(40)]
+        nets = [n for n, w in VISITOR_NETS for _ in range(w)]
+        self.visitors = [f"{self.r.choice(nets)}{self.r.randint(1, 250)}.{self.r.randint(1, 250)}" for _ in range(40)]
+        self.blocked: set = set()
+        self.fw_last: dict = {}
 
     # ---- log line builders -------------------------------------------------------
     def _sys(self, t, host, app, msg, pid=None):
@@ -119,7 +129,8 @@ class Simulator:
         r = self.r
         ip = _bad_ip(r)
         a = {"id": uuid.uuid4().hex[:8], "kind": kind, "name": ATTACKS[kind][0], "ip": ip,
-             "launched": time.time(), "detected": None, "by": None, "alert_id": None, "also": []}
+             "launched": time.time(), "detected": None, "by": None, "alert_id": None, "also": [],
+             "ends": None, "blocked_at": None, "dropped": 0, "sent": 0, "total": 0}
         start = time.time()
         steps = []  # (seconds after launch, function(t) -> line)
         pid = r.randint(2000, 30000)
@@ -160,11 +171,43 @@ class Simulator:
             ua = r.choice(UAS)
             for i in range(150):
                 steps.append((i * 0.12, lambda t, i=i: self._web(t, ip, f"/invoices/INV-{24000 + i}.pdf", 200, ua)))
+        a["ends"] = start + max(s for s, _ in steps)
+        a["total"] = len(steps)
         with self.lock:
             self.attacks.insert(0, a)
-            self.queue.extend((start + s, f) for s, f in steps)
+            self.queue.extend((start + s, f, a) for s, f in steps)
             self.queue.sort(key=lambda x: x[0])
         return a
+
+    # ---- responding -------------------------------------------------------------------
+    def block(self, ip: str) -> bool:
+        """The lab firewall drops everything from this address. True if it was one of the lab's attackers."""
+        self.blocked.add(ip)
+        hit = False
+        for a in self.attacks:
+            if a["ip"] == ip:
+                hit = True
+                if a["blocked_at"] is None:
+                    a["blocked_at"] = time.time()
+        return hit
+
+    def unblock(self, ip: str):
+        self.blocked.discard(ip)
+
+    def reset_history(self):
+        with self.lock:
+            self.attacks.clear()
+            self.queue.clear()
+        self.blocked.clear()
+
+    def _dropped(self, a, t):
+        """A line from a blocked attacker: the firewall drops it and, now and then, says so."""
+        a["dropped"] += 1
+        now = time.time()
+        if now - self.fw_last.get(a["ip"], 0) >= 5:
+            self.fw_last[a["ip"]] = now
+            port = 443 if a["kind"] in ("sql_injection", "web_scan", "data_theft", "sneaky_theft") else 22
+            self.emit(self._fw(t, a["ip"], port))
 
     def mark_detected(self, entity: str, alert_id: int, by: str):
         for a in self.attacks:
@@ -184,8 +227,12 @@ class Simulator:
                     self.emit(ln)
                 next_normal += self.r.expovariate(self.rate)
             with self.lock:
-                due = [f for d, f in self.queue if d <= now]
-                self.queue = [(d, f) for d, f in self.queue if d > now]
-            for f in due:
-                self.emit(f(t))
+                due = [(f, a) for d, f, a in self.queue if d <= now]
+                self.queue = [x for x in self.queue if x[0] > now]
+            for f, a in due:
+                if a["ip"] in self.blocked:
+                    self._dropped(a, t)
+                else:
+                    a["sent"] += 1
+                    self.emit(f(t))
             time.sleep(0.05)

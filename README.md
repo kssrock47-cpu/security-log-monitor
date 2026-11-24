@@ -25,7 +25,14 @@ It takes security logs from anywhere, watches them live or checks them offline, 
   * It learns from your answers. "Real threat" makes it more watchful of that behaviour; "False alarm" makes it calmer and stops that exact alert coming back. This is a small reinforcement loop: the sensitivities are the policy and your answers are the reward.
   * The lessons are saved and shared across all connections. The **AI learning** page shows what changed. In the attack lab, "Sneaky data theft" gets through until you confirm a "Quiet data theft" as real; after that the AI catches it.
 * **Screens:** a radar of who's active, a live threat level, pop-up alerts, a threats inbox with evidence and advice, and buttons to mark each alert as real or a false alarm.
-* **Attack lab:** a pretend network with 8 attacks to launch, timed to show how fast each one is caught. "Quiet data theft" matches no known pattern, so only the AI can catch it.
+* **Attack story:** separate alerts from one attacker (and the accounts it logged in as) are joined into one story across 7 attack steps, following the MITRE ATT&CK tactics: looking around, guessing passwords, getting in, becoming admin, staying in, hiding tracks, taking data or doing harm.
+* **Attack map:** a world map of where activity comes from, with lines from attackers to your systems. The country lookup is offline (geoip2fast, built from MaxMind GeoLite2 data), so it works without internet.
+* **Risk score and profiles:** every address and user gets a risk score from 0 to 100. Recent threats count most and fade with a 30-minute half-life; threats marked real count more, false alarms count nothing. Click any address for its profile: country, risk trend, accounts used, activity, threats and log lines.
+* **Respond:** block an address for 30 minutes. In the attack lab the lab firewall really drops its traffic; elsewhere the block is simulated in this prototype (a real firewall rule is planned for FYP2). Addresses inside your own network are on an allowlist and can never be blocked.
+* **Incident report:** one click makes a PDF of any threat: what happened, the attack story, the evidence and the response.
+* **Presentation mode:** a full-screen view for a projector, with the map, the radar, live threats and the riskiest addresses. Press M to switch view, Esc to leave.
+* **Guided demo:** a 23-step tour that explains every screen and runs the whole story live (about 6 minutes). Tick "Start fresh" to clear old threats and lessons first.
+* **Attack lab:** a pretend company network in Malaysia with 9 attacks to launch, timed to show how fast each one is caught. "Quiet data theft" matches no known pattern, so only the AI can catch it. "Sneaky data theft" gets through until you teach the AI. The AI learning page shows a before and after chart.
 
 **2. Research on HDFS_v1 (the FYP evaluation)**
 The full benchmark run on 11,175,629 real log lines: Drain3 parsing, Random Forest and Isolation Forest with a time-ordered split, accuracy against the official answer key, and a replay of the newer logs. Results are below.
@@ -105,6 +112,7 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
 * A deep sequence model (for example LSTM)
 * Deeper per-alert explanations (SHAP)
 * A supervised model trained on many confirmed threats, building on today's feedback loop
+* Real automatic response: firewall rules (Windows Firewall, iptables) instead of the simulated block, and alerts to Telegram or email
 
 ## Project layout
 
@@ -124,9 +132,14 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
     seclog/sources.py    connections: file, folder, web address, syslog, Windows events, attack lab
     seclog/simulator.py  the attack lab
     seclog/monitor.py    the live engine and its SQLite store
+    seclog/insight.py    location, risk score and attack-story steps
+    seclog/report.py     PDF incident reports (fonts in seclog/fonts)
     web/monitor.js       live monitor screens
-    tests/               20 tests (python -m pytest)
+    web/insight.js       attack story, map, profiles, blocking, presentation mode
+    web/world.js         world map shapes (Natural Earth, public domain)
+    web/tour.js          the guided demo
+    tests/               25 tests (python -m pytest)
 
 ## Credits
 
-HDFS, OpenSSH, Linux and Apache sample logs: loghub (He et al., 2023). Log parsing: Drain3 (IBM). Fonts: IBM Plex (SIL Open Font License).
+HDFS, OpenSSH, Linux and Apache sample logs: loghub (He et al., 2023). Log parsing: Drain3 (IBM). Fonts: IBM Plex (SIL Open Font License). Map shapes: Natural Earth via world-atlas (public domain). Country lookup: geoip2fast with MaxMind GeoLite2 data (CC BY-SA 4.0). PDF: fpdf2.

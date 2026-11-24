@@ -42,13 +42,14 @@
     : `<b>Not caught yet.</b> Press Next to carry on.`;
 
   // ---------------------------------------------------------------- the story
+  const threatPage = (k) => () => (T.data[k] && T.data[k].alert_id ? `#/threats/${T.data[k].alert_id}` : "#/threats");
   const STEPS = [
     { title: "Welcome to the Security Log Monitor", page: "#/monitor",
       text: `Computers keep a diary of everything they do, called a <b>log</b>. This monitor reads security logs, uses AI to spot threats, and explains each one in plain words.
-             <br><br>This tour takes about 4 minutes. It explains each part and runs a real demo: attacks are launched, caught, and the AI learns from you.
-             <label class="tour-check"><input type="checkbox" id="tourFresh"> Start fresh: make the AI forget earlier lessons (best for a demo)</label>` },
+             <br><br>This tour takes about 6 minutes. It explains each part and runs a real demo: attacks are launched, caught, explained, blocked, and the AI learns from you.
+             <label class="tour-check"><input type="checkbox" id="tourFresh"> Start fresh: clear old threats and make the AI forget earlier lessons (best for a demo)</label>` },
     { title: "The radar: who's active", page: "#/monitor", target: ".radar-card",
-      text: `Every dot is an <b>IP address or user</b> that wrote to the logs in the last 15 minutes. Green is normal. Gold is worth checking. Red is a threat, and the closer to the middle, the more dangerous. Click any dot to see its threats.` },
+      text: `Every dot is an <b>IP address or user</b> that wrote to the logs in the last 15 minutes. Green is normal. Gold is worth checking. Red is a threat, and the closer to the middle, the more dangerous. Click any dot to open its full profile.` },
     { title: "Threat level and live numbers", page: "#/monitor", target: ".mon-text",
       text: `A one-word summary of the last 10 minutes, from <b>Calm</b> to <b>Under attack</b>, plus how many lines a second are being checked and how many threats are waiting for a person.` },
     { title: "Live activity", page: "#/monitor", target: ".mon-grid",
@@ -56,19 +57,26 @@
     { title: "Connect logs from anywhere", page: "#/connect", target: ".tiles",
       text: `Six ways to bring logs in. <b>Offline</b>: drop a file. <b>Online, live</b>: watch a file or folder on this PC, link a web address, receive logs from routers and servers (syslog), read this PC's Windows events, or use the attack lab. It reads Linux, SSH, web server, firewall, Windows and JSON logs.` },
     { title: "The attack lab", page: "#/lab", action: "Start the attack lab",
-      text: `To show the monitor working, we use a pretend company network: a website with visitors, staff logging in, a firewall. It writes realistic logs. First the AI watches 20 minutes of normal activity to learn what normal looks like.`,
+      text: `To show the monitor working, we use a pretend company network in Malaysia: a website with visitors, staff logging in, a firewall. It writes realistic logs. First the AI watches 20 minutes of normal activity to learn what normal looks like.`,
       run: async (say) => { const l = await ensureLab(say); return l ? `<b>Ready.</b> The AI has learned normal behaviour. Now let's attack it.` : `It's taking longer than usual. Press Next to carry on.`; } },
     { title: "Attack 1: a break-in", page: "#/lab", target: '[data-kind="break_in"]', action: "Launch the break-in",
       text: `An attacker guesses passwords until one works, then makes itself an administrator. A <b>known attack pattern</b> should catch this within seconds.`,
-      run: async (say) => { await ensureLab(say); const x = await launchAndWait("break_in", say, 40); T.data.breakin = x; return caught(x); } },
+      run: async (say) => { await ensureLab(say); const x = await launchAndWait("break_in", say, 40); T.data.breakin = x;
+        const left = x.launched * 1000 + 16500 - Date.now();
+        if (left > 0) { say("Caught. Watching what the attacker does next…"); await wait(left); }
+        return caught(x); } },
+    { title: "The attack story", page: threatPage("breakin"), target: "#tdetail .story-panel",
+      text: `Separate alerts are joined into one story. Each step is a stage of an attack, from <b>looking around</b> to <b>taking data</b>, following the MITRE ATT&CK tactics. Here the attacker guessed passwords, got in, then became admin. The red step is how far it got.` },
+    { title: "Risk score and profile", target: ".prof-head",
+      page: () => (T.data.breakin ? `#/entity/${encodeURIComponent(T.data.breakin.ip)}` : "#/map"),
+      text: `Click any address to see everything about it: <b>which country</b> it's in (found offline), a <b>risk score from 0 to 100</b>, the accounts it used, its activity and every threat. Recent threats count most and fade over 30 minutes.` },
     { title: "Attack 2: quiet data theft", page: "#/lab", target: '[data-kind="data_theft"]', action: "Launch the data theft",
       text: `Someone quietly downloads 150 invoices. Every request looks normal on its own, so <b>no known pattern matches</b>. Only the AI can notice that this address is behaving unlike anyone else. The AI checks every 30 seconds, so this takes a little longer.`,
       run: async (say) => { await ensureLab(say); const x = await launchAndWait("data_theft", say, 90); T.data.theft = x; return caught(x); } },
-    { title: "Opening a threat", target: "#tdetail .detail-head",
-      page: () => (T.data.theft && T.data.theft.alert_id ? `#/threats/${T.data.theft.alert_id}` : "#/threats"),
-      text: `Each threat says <b>what happened</b> in plain words, <b>who</b> did it, <b>where</b> it came from and <b>when</b>. Red is high risk, gold is medium.` },
-    { title: "Why the AI flagged it", target: "#tdetail .panel",
-      text: `The AI explains itself with numbers anyone can read, for example "asked for 150 different web pages (normally at most 13)". It compares this address with the normal behaviour it learned.` },
+    { title: "Opening a threat", target: "#tdetail .detail-head", page: threatPage("theft"),
+      text: `Each threat says <b>what happened</b> in plain words, <b>who</b> did it, <b>where</b> in the world it came from and <b>when</b>. Red is high risk, gold is medium.` },
+    { title: "Why the AI flagged it", target: "#tdetail .what-panel",
+      text: `The AI explains itself with numbers anyone can read, for example "asked for 54 different web pages (normally at most 13)". It compares this address with the normal behaviour it learned.` },
     { title: "The evidence", target: "#tdetail .logview",
       text: `The actual log lines behind the alert, so a person can check it in seconds. Switch between plain words and the original lines.` },
     { title: "Teach the AI", target: "#tdetail .actbar", action: "Mark it as a real threat",
@@ -85,12 +93,29 @@
     { title: "Attack 3: sneaky data theft", page: "#/lab", target: '[data-kind="sneaky_theft"]', action: "Launch the sneaky theft",
       text: `A slower theft, designed to stay under the radar. Before your lesson the AI let this through. Now that you've taught it, let's see.`,
       run: async (say) => { await ensureLab(say); const x = await launchAndWait("sneaky_theft", say, 110); T.data.sneaky = x; return caught(x) + (x.detected ? `<br>This was only caught <b>because you taught the AI</b>.` : ""); } },
+    { title: "Respond: block the attacker", page: "#/lab", target: '[data-kind="sneaky_theft"]', action: "Block the attacker",
+      text: `The theft is still running. Catching it is half the job; the other half is stopping it. <b>Block</b> drops everything from this address for 30 minutes. Addresses inside your own network are on an allowlist and can never be blocked, so the monitor can't lock you out.`,
+      run: async (say) => {
+        const x = T.data.sneaky;
+        if (!x) return `Nothing to block. Press Next to carry on.`;
+        say(`Blocking ${x.ip}…`);
+        const r = await post("/api/m/block", { entity: x.ip, minutes: 30 });
+        await wait(1500);
+        const a = (await lab()).attacks.find((z) => z.id === x.id) || {};
+        return `<b>${esc(r.text)}</b>` + (a.stopped ? `<br>${a.stopped} of its ${a.total} invoice downloads will never happen. Watch the count on the card.` : `<br>The attack had already finished, but the address stays blocked for 30 minutes.`);
+      } },
+    { title: "Before and after your lesson", page: "#/ai", target: ".teach",
+      text: `Proof that it learned. Left: the sneaky theft, caught after your lesson (run it before teaching and it shows as a red "Got through" bar). Right: the line the AI uses to raise an alert, before and after. A shorter bar means it reacts sooner.` },
+    { title: "The attack map", page: "#/map", target: ".mapcard",
+      text: `Where the activity comes from. Bubbles are countries with visitors; red lines are attackers heading for your systems in Malaysia, and blocked attackers turn grey. The country lookup works offline. Click any attacker to open its profile.` },
+    { title: "Report and presentation mode", page: threatPage("sneaky"), target: "#tdetail .todo-panel",
+      text: `<b>Download report</b> makes a PDF of any threat: what happened, the attack story, the evidence and what was done, ready to hand to a manager. The <b>Present</b> button at the top makes a full-screen view for a projector, with the map, radar and live threats.` },
     { title: "Research results on real data", page: "#/research", target: ".hero",
       text: `The research part of the project. The same methods run on <b>HDFS_v1</b>, a public dataset of 11 million real log lines with an official answer key. This page shows what was found.` },
     { title: "How often it's right", page: "#/accuracy", target: ".acc",
       text: `Checked fairly: the models learned from the older 70% of the logs and were tested on the newer 30%. Each dot is a real problem: filled if caught, hollow if missed.` },
     { title: "That's the tour", page: "#/monitor",
-      text: `You've seen it read logs, catch known attacks in seconds, catch an unknown one with AI, explain every alert with evidence, and <b>learn from your answers</b>.
+      text: `You've seen it read logs, catch known attacks in seconds, catch an unknown one with AI, tell the attack story, score the risk, <b>learn from your answers</b>, block the attacker and write a report.
              <br><br>Tip: switch on <b>Show technical terms</b> (top right) to see the algorithm names (Drain3, Isolation Forest, Random Forest) and MITRE ATT&CK codes. <b>The AI does a first check. A person still decides what matters.</b>` },
   ];
 
@@ -130,6 +155,7 @@
     card.style.left = left + "px"; card.style.top = top + "px";
   }
   addEventListener("resize", place);
+  setInterval(() => { if (T.on && !T.busy) place(); }, 700);  // follow layout changes, like the review bar appearing
   addEventListener("scroll", place, true);
 
   async function show(i) {
@@ -159,7 +185,7 @@
   async function next() {
     if (T.busy) return;
     const s = STEPS[T.i];
-    if (T.i === 0 && T.fresh) { await post("/api/m/ai/reset").catch(() => {}); }
+    if (T.i === 0 && T.fresh) { await post("/api/m/clear").catch(() => {}); await post("/api/m/ai/reset").catch(() => {}); }
     if (s.run && !s.done) {
       T.busy = true;
       const btn = $("#tourNext"), res = $("#tourResult");
