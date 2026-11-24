@@ -13,3 +13,6 @@ data/monitor.db-shm
 data/research_replay.log
 data/research/*.db
 data/research/*.log
+
+data/eval/*/
+data/eval/*.txt

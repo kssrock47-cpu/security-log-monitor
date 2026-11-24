@@ -1,0 +1,40 @@
+{
+  "dataset": "Loghub OpenSSH (real server on the internet, unlabelled)",
+  "file": "C:\\Users\\USER\\Downloads\\loghub_SSH\\SSH.log",
+  "lines": 655147,
+  "seconds": 104.8,
+  "lines_per_second": 6250,
+  "addresses_seen": 1185,
+  "addresses_with_failed_logins": 1015,
+  "alerts": 1924,
+  "alerts_per_1000_lines": 2.94,
+  "alerts_by_kind": {
+    "ai": 66,
+    "pattern": 1858
+  },
+  "alerts_by_type": {
+    "Someone is guessing passwords": 1289,
+    "One address is trying many different usernames": 291,
+    "Someone is guessing passwords slowly, to stay under the radar": 260,
+    "Unusual behaviour the AI hasn't seen before": 66,
+    "Many addresses from one network are guessing passwords together": 18
+  },
+  "addresses_flagged": 480,
+  "share_of_failing_addresses_flagged": 0.473,
+  "flagged_by_country": {
+    "China": 191,
+    "France": 40,
+    "United States": 39,
+    "Vietnam": 33,
+    "South Korea": 25,
+    "Russia": 19,
+    "India": 18,
+    "Brazil": 14,
+    "Italy": 14,
+    "Netherlands": 13,
+    "Iran": 7,
+    "Argentina": 6
+  },
+  "break_in_alerts": [],
+  "successful_logins_from_flagged_addresses": []
+}
