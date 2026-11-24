@@ -612,6 +612,31 @@ def m_blocks():
     return MON.block_list()
 
 
+@app.get("/api/m/response")
+def m_response():
+    return MON.response_view()
+
+
+class FirewallReq(BaseModel):
+    real_firewall: bool
+
+
+@app.post("/api/m/response")
+def m_response_set(r: FirewallReq):
+    try:
+        return MON.set_real_firewall(r.real_firewall)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+
+
+@app.post("/api/m/response/test")
+def m_response_test():
+    try:
+        return MON.firewall_test()
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+
+
 @app.post("/api/m/clear")
 def m_clear():
     MON.clear()

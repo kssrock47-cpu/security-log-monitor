@@ -511,8 +511,10 @@
       <button class="btn small ghost" data-sample="linux">Linux system log</button>
       <button class="btn small ghost" data-sample="apache">Apache web server (mostly harmless)</button></p>
     <h2>Your connections</h2>
-    <div class="conns" id="conns" style="margin-top:14px"></div>`;
+    <div class="conns" id="conns" style="margin-top:14px"></div>
+    <section class="panel resp-panel" id="respPanel" style="margin-top:30px"></section>`;
     wireTiles(view);
+    renderResponse();
     $$("[data-sample]").forEach((b) => b.addEventListener("click", async () => {
       b.disabled = true;
       await post(`/api/m/sample/${b.dataset.sample}`);
@@ -521,6 +523,47 @@
     }));
     every(renderConns, 2000);
   };
+
+  const MODE = { lab: "attack lab firewall", firewall: "Windows Firewall", simulated: "simulated" };
+  async function renderResponse(testResult) {
+    const box = $("#respPanel"); if (!box) return;
+    const r = await api("/api/m/response").catch(() => null);
+    if (!r || !$("#respPanel")) return;
+    const fw = r.firewall, on = r.real_firewall;
+    box.innerHTML = `
+      <h3>Blocking attackers</h3>
+      <p class="muted" style="margin:6px 0 14px">The Block button on a threat stops an address for ${r.minutes} minutes. In the attack lab it always works.
+        For real addresses, switch on the Windows Firewall below. Your own network is never blocked.</p>
+      <div class="fw-row">
+        <label class="toggle"><input type="checkbox" id="fwToggle" ${on ? "checked" : ""} ${!fw.available && !on ? "disabled" : ""}> <span>Block with the Windows Firewall</span></label>
+        <span class="fw-state ${fw.available ? "ok" : ""}">${fw.available ? (on ? "On: blocks add a real firewall rule" : "Ready: the monitor is running as administrator") : esc(fw.why)}</span>
+        ${fw.available ? `<button class="btn small ghost" id="fwTest" type="button">Test it safely</button>` : ""}
+      </div>
+      <p class="muted small" style="margin:10px 0 0">Each rule is named "${esc(r.rule_prefix)} &lt;address&gt;", blocks incoming traffic only, and is removed when the block ends, when you unblock, or when you switch this off.</p>
+      <div id="fwTestOut">${testResult || ""}</div>
+      <h4 style="margin:18px 0 8px">Blocked right now</h4>
+      <div class="rows">${r.blocks.map((b) => `<div class="arow"><span class="blocked-chip">Blocked</span>
+          <span>${entLink(b.entity, b.entity)}<small>${esc(MODE[b.mode] || b.mode)}, until ${new Date(b.until * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</small></span>
+          <button class="btn small ghost" data-unb="${esc(b.entity)}" type="button">Unblock</button></div>`).join("")
+        || `<div class="empty small">Nothing is blocked.</div>`}</div>`;
+    $("#fwToggle").addEventListener("change", async (e) => {
+      try { await post("/api/m/response", { real_firewall: e.target.checked }); note(e.target.checked ? "Real firewall blocking is on" : "Real firewall blocking is off",
+        e.target.checked ? "Blocks of real addresses now add a Windows Firewall rule." : "Every rule the monitor added was removed."); }
+      catch (err) { note("Couldn't change it", err.message); }
+      renderResponse();
+    });
+    const t = $("#fwTest");
+    if (t) t.addEventListener("click", async () => {
+      t.disabled = true; t.innerHTML = `<span class="spinner"></span>Testing…`;
+      let html;
+      try {
+        const res = await post("/api/m/response/test");
+        html = `<div class="fw-test ${res.ok ? "ok" : "bad"}"><b>${res.ok ? "It works." : "Something didn't work."}</b><ul>${res.steps.map((x) => `<li>${x.ok ? "✓" : "✗"} ${esc(x.step)}${x.detail ? `: ${esc(x.detail)}` : ""}</li>`).join("")}</ul></div>`;
+      } catch (err) { html = `<div class="fw-test bad">${esc(err.message)}</div>`; }
+      renderResponse(html);
+    });
+    $$("[data-unb]", box).forEach((b) => b.addEventListener("click", async () => { await post("/api/m/unblock", { entity: b.dataset.unb }); renderResponse(); }));
+  }
 
   async function renderConns() {
     const box = $("#conns"); if (!box) return;

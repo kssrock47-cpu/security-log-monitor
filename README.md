@@ -28,7 +28,7 @@ It takes security logs from anywhere, watches them live or checks them offline, 
 * **Attack story:** separate alerts from one attacker (and the accounts it logged in as) are joined into one story across 7 attack steps, following the MITRE ATT&CK tactics: looking around, guessing passwords, getting in, becoming admin, staying in, hiding tracks, taking data or doing harm.
 * **Attack map:** a world map of where activity comes from, with lines from attackers to your systems. The country lookup is offline (geoip2fast, built from MaxMind GeoLite2 data), so it works without internet.
 * **Risk score and profiles:** every address and user gets a risk score from 0 to 100. Recent threats count most and fade with a 30-minute half-life; threats marked real count more, false alarms count nothing. Click any address for its profile: country, risk trend, accounts used, activity, threats and log lines.
-* **Respond:** block an address for 30 minutes. In the attack lab the lab firewall really drops its traffic; elsewhere the block is simulated in this prototype (a real firewall rule is planned for FYP2). Addresses inside your own network are on an allowlist and can never be blocked.
+* **Respond:** block an address for 30 minutes. In the attack lab the lab firewall really drops its traffic. For real addresses, switch on **Block with the Windows Firewall** on the Connect logs page (off by default; needs `run.bat` started with "Run as administrator"). Each block then adds an inbound Windows Firewall rule named `SecurityLogMonitor block <address>`, removed automatically when the block ends, when you unblock, when you switch the option off, or at the next start if one was left behind. **Test it safely** adds and removes a rule for 203.0.113.50, an address reserved for examples. Addresses inside your own network are on an allowlist and are never blocked. Without the option, blocks are simulated.
 * **Incident report:** one click makes a PDF of any threat: what happened, the attack story, the evidence and the response.
 * **Presentation mode:** a full-screen view for a projector, with the map, the radar, live threats and the riskiest addresses. Press M to switch view, Esc to leave.
 * **Guided demo:** a 23-step tour that explains every screen and runs the whole story live (about 6 minutes). Tick "Start fresh" to clear old threats and lessons first.
@@ -120,7 +120,7 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
 * A deep sequence model (for example LSTM)
 * Deeper per-alert explanations (SHAP)
 * A supervised model trained on many confirmed threats, building on today's feedback loop
-* Real automatic response: firewall rules (Windows Firewall, iptables) instead of the simulated block, and alerts to Telegram or email
+* More automatic response: firewall rules on Linux (iptables), and alerts to Telegram or email
 
 ## Project layout
 
@@ -142,13 +142,14 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
     seclog/monitor.py    the live engine and its SQLite store
     seclog/insight.py    location, risk score and attack-story steps
     seclog/report.py     PDF incident reports (fonts in seclog/fonts)
+    seclog/firewall.py   optional real blocking with the Windows Firewall
     seclog/snapshot.py   portable copy of the HDFS_v1 results (data/research)
     run.bat, run.sh      launchers for Windows, and for Mac and Linux
     web/monitor.js       live monitor screens
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               28 tests (python -m pytest)
+    tests/               32 tests (python -m pytest)
 
 ## Credits
 

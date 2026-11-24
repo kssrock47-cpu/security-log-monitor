@@ -14,7 +14,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
-from . import formats, insight
+from . import firewall, formats, insight
 from .ai import WindowAI
 from .learning import Learner
 from .parse import make_miner
@@ -114,6 +114,10 @@ class Monitor:
         self.started = time.time()
         self.blocks = {r[0]: r[1] for r in self._rows("select entity, until from blocks where until>?", (time.time(),))}
         self._restore_recent()
+        row = self.con.execute("select value from memory where key='settings'").fetchone()
+        self.settings = {"real_firewall": False, **(json.loads(row[0]) if row else {})}
+        self._last_expiry = 0
+        threading.Thread(target=self._firewall_tidy, daemon=True).start()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._ticker, daemon=True).start()
         for r in self._rows("select id, kind, name, config from sources where enabled=1 and kind!='upload'"):
@@ -391,6 +395,9 @@ class Monitor:
                     last = time.time()
                     self._push("stats", self.stats())
                     self._save_learner()
+                if time.time() - self._last_expiry > 15:
+                    self._last_expiry = time.time()
+                    self._expire_blocks()
             except Exception as e:
                 self._push("error", {"text": str(e)[:200]})
 
@@ -710,26 +717,97 @@ class Monitor:
         until = time.time() + minutes * 60
         sim = self.simulator()
         in_lab = bool(sim and sim.sim.block(ent))
-        mode = "lab" if in_lab else "simulated"
+        mode, problem = ("lab" if in_lab else "simulated"), None
+        if not in_lab and self.settings.get("real_firewall"):
+            if firewall.status()["available"]:
+                ok, out = firewall.add(ent)
+                if ok:
+                    mode = "firewall"
+                else:
+                    problem = out[:200] or "the firewall refused the rule"
+            else:
+                problem = firewall.status()["why"]
         self._exec("insert or replace into blocks values (?,?,?,?,?)", (ent, time.time(), until, alert_id, mode))
         self.blocks[ent] = until
         e = self.entities.get(ent)
         if e:
             e["last"] = time.time()
-        text = (f"Blocked in the attack lab for {minutes} minutes. The lab firewall now drops everything from {ent}."
-                if in_lab else
-                f"Marked as blocked for {minutes} minutes. In this prototype the block is simulated; the next version "
-                "adds a real firewall rule (Windows Firewall or iptables).")
+        if mode == "lab":
+            text = f"Blocked in the attack lab for {minutes} minutes. The lab firewall now drops everything from {ent}."
+        elif mode == "firewall":
+            text = (f"Blocked with the Windows Firewall for {minutes} minutes. A rule named \"{firewall.rule_name(ent)}\" "
+                    "now drops all incoming traffic from it, and is removed automatically when the block ends.")
+        elif problem:
+            text = f"Marked as blocked for {minutes} minutes, but the real firewall rule could not be added: {problem}"
+        else:
+            text = (f"Marked as blocked for {minutes} minutes. This block is simulated. To really block it, switch on "
+                    "\"Block with the Windows Firewall\" on the Connect logs page (needs administrator).")
         self._push("block", {"entity": ent, "until": until, "mode": mode, "text": text})
         return {"entity": ent, "until": until, "mode": mode, "text": text}
 
     def unblock(self, ent):
+        mode = self._one("select mode from blocks where entity=?", (ent,))
+        if mode == "firewall":
+            firewall.remove(ent)
         self._exec("delete from blocks where entity=?", (ent,))
         self.blocks.pop(ent, None)
         sim = self.simulator()
         if sim:
             sim.sim.unblock(ent)
         self._push("unblock", {"entity": ent})
+
+    # ---------------------------------------------------------------- the real firewall (optional)
+    def _expire_blocks(self):
+        """Remove firewall rules for blocks that have ended, and forget ended blocks."""
+        now = time.time()
+        for (ent,) in self._rows("select entity from blocks where until<=? and mode='firewall'", (now,)):
+            firewall.remove(ent)
+        if self._one("select count(*) from blocks where until<=?", (now,)):
+            self._exec("delete from blocks where until<=?", (now,))
+
+    def _firewall_tidy(self):
+        """At start-up: remove any of our rules left behind (for example after a crash) that no longer match a block."""
+        try:
+            self._expire_blocks()
+            if firewall.status()["available"]:
+                active = {r[0] for r in self._rows("select entity from blocks where mode='firewall' and until>?", (time.time(),))}
+                for ip in firewall.ours():
+                    if ip not in active:
+                        firewall.remove(ip)
+        except Exception:
+            pass
+
+    def response_view(self):
+        return {"firewall": firewall.status(), "real_firewall": bool(self.settings.get("real_firewall")),
+                "blocks": self.block_list(), "rule_prefix": firewall.PREFIX.strip(), "minutes": 30}
+
+    def set_real_firewall(self, on):
+        on = bool(on)
+        if on and not firewall.status()["available"]:
+            raise PermissionError(firewall.status()["why"])
+        self.settings["real_firewall"] = on
+        self._exec("insert or replace into memory values ('settings', ?)", (json.dumps(self.settings),))
+        if not on:  # switching off removes every rule we added; the blocks carry on as simulated
+            for (ent,) in self._rows("select entity from blocks where mode='firewall'"):
+                firewall.remove(ent)
+            self._exec("update blocks set mode='simulated' where mode='firewall'")
+        return self.response_view()
+
+    def firewall_test(self, ip="203.0.113.50"):
+        """Prove it works without touching real traffic: add a rule for a documentation-only address, check, remove."""
+        st = firewall.status()
+        if not st["available"]:
+            raise PermissionError(st["why"])
+        steps = []
+        ok, out = firewall.add(ip)
+        steps.append({"step": f"Add a rule blocking {ip} (an address reserved for examples, never used on the internet)",
+                      "ok": ok, "detail": "" if ok else out[:200]})
+        found = firewall.exists(ip)
+        steps.append({"step": f"Windows Firewall now lists the rule \"{firewall.rule_name(ip)}\"", "ok": found, "detail": ""})
+        firewall.remove(ip)
+        gone = not firewall.exists(ip)
+        steps.append({"step": "Remove the rule again", "ok": gone, "detail": ""})
+        return {"ok": ok and found and gone, "steps": steps}
 
     def block_list(self):
         now = time.time()
@@ -739,6 +817,8 @@ class Monitor:
     # ---------------------------------------------------------------- clear the slate (keeps what the AI learned)
     def clear(self):
         self._flush_events()
+        for (ent,) in self._rows("select entity from blocks where mode='firewall'"):
+            firewall.remove(ent)
         with self.dbl:
             self.con.execute("delete from alerts")
             self.con.execute("delete from events")

@@ -60,7 +60,7 @@
   /* ================================================================ responding: block + report */
   function blockHtml(d) {
     if (d.blocked) {
-      return `<span class="blocked-chip">Blocked until ${hhmm(d.blocked.until)}${d.blocked.mode === "lab" ? ", by the attack lab firewall" : ", simulated"}</span>
+      return `<span class="blocked-chip">Blocked until ${hhmm(d.blocked.until)}${{ lab: ", by the attack lab firewall", firewall: ", by the Windows Firewall" }[d.blocked.mode] || ", simulated"}</span>
         <button class="btn small ghost" data-unblock type="button">Unblock</button>`;
     }
     if (d.can_block) return `<button class="btn small danger" data-blockit type="button">Block this address for 30 minutes</button>`;

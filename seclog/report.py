@@ -144,7 +144,7 @@ def build(d, story, profile, blocked=None):
              ("Status", STATUS.get(d["status"], d["status"]))]
     if blocked:
         facts.append(("Response", f"Address blocked until {datetime.fromtimestamp(blocked['until']):%H:%M}"
-                                  f" ({'in the attack lab' if blocked['mode'] == 'lab' else 'simulated in this prototype'})"))
+                                  f" ({ {'lab': 'by the attack lab firewall', 'firewall': 'by a Windows Firewall rule'}.get(blocked['mode'], 'simulated') })"))
     if d.get("mitre"):
         facts.append(("Method" if d["kind"] == "ai" else "MITRE ATT&CK", d["mitre"]))
     pdf.set_draw_color(*RULE)

@@ -457,3 +457,12 @@ body.present .view { max-width: none; padding: 0; }
 }
 @media (max-width: 1280px) and (min-width: 861px) { .shell { background: linear-gradient(to right, var(--ink) 216px, transparent 216px); } }
 body.present .shell { background: none; }
+
+/* ---------- blocking settings (Connect logs page) ---------- */
+.fw-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.fw-row .toggle span { font-weight: 600; color: var(--ink); }
+.fw-state { font-size: 14px; color: #7a5f06; background: var(--brass-soft); padding: 5px 10px; border-radius: 10px; }
+.fw-state.ok { color: var(--moss); background: var(--moss-soft); }
+.fw-test { margin-top: 12px; padding: 10px 14px; border-radius: 12px; background: var(--moss-soft); color: #1f5d40; font-size: 14.5px; }
+.fw-test.bad { background: var(--flare-soft); color: #6d1c11; }
+.fw-test ul { margin: 6px 0 0; padding-left: 18px; list-style: none; }

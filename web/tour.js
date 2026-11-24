@@ -94,7 +94,7 @@
       text: `A slower theft, designed to stay under the radar. Before your lesson the AI let this through. Now that you've taught it, let's see.`,
       run: async (say) => { await ensureLab(say); const x = await launchAndWait("sneaky_theft", say, 110); T.data.sneaky = x; return caught(x) + (x.detected ? `<br>This was only caught <b>because you taught the AI</b>.` : ""); } },
     { title: "Respond: block the attacker", page: "#/lab", target: '[data-kind="sneaky_theft"]', action: "Block the attacker",
-      text: `The theft is still running. Catching it is half the job; the other half is stopping it. <b>Block</b> drops everything from this address for 30 minutes. Addresses inside your own network are on an allowlist and can never be blocked, so the monitor can't lock you out.`,
+      text: `The theft is still running. Catching it is half the job; the other half is stopping it. <b>Block</b> drops everything from this address for 30 minutes. Addresses inside your own network are on an allowlist and can never be blocked, so the monitor can't lock you out. For real addresses it can add a Windows Firewall rule (an option on the Connect logs page).`,
       run: async (say) => {
         const x = T.data.sneaky;
         if (!x) return `Nothing to block. Press Next to carry on.`;
