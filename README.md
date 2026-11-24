@@ -104,6 +104,23 @@ Run on 23 Nov 2026: all 11,175,629 lines and 575,061 storage tasks (blocks), usi
 | Random Forest (supervised) | 3,717 of 3,723 | 0 | 1.000 | 0.998 | 0.999 |
 | Isolation Forest (unsupervised) | 2,116 of 3,723 | 510 | 0.806 | 0.568 | 0.667 |
 
+### Eight machine-learning techniques compared
+
+The same data, features and split, run through the eight techniques of the standard log anomaly benchmark (He et al., 2016, *Experience Report: System Log Analysis for Anomaly Detection*), with scikit-learn defaults and no tuning. The unsupervised ones never see the answer key; each raises an alert for anything more unusual than the 3% most unusual older tasks. One-Class SVM and Local Outlier Factor learn from a random 20,000 of the older tasks, because they slow down sharply with more. Run with `python -m seclog.compare` (about 6 minutes, most of it reading the database); results go to `data/eval/compare.json` and the dashboard's Accuracy page.
+
+| Technique | Learns from | Caught (of 3,723) | False alarms | Precision | Recall | F1 | Time to learn |
+|---|---|---|---|---|---|---|---|
+| Decision Tree | labelled examples | 3,717 | 0 | 1.000 | 0.998 | 0.999 | 2 s |
+| Random Forest (Detector B) | labelled examples | 3,717 | 0 | 1.000 | 0.998 | 0.999 | 11 s |
+| Linear SVM | labelled examples | 3,707 | 5 | 0.999 | 0.996 | 0.997 | 54 s |
+| Logistic Regression | labelled examples | 3,707 | 83 | 0.978 | 0.996 | 0.987 | 2 s |
+| PCA | normal only | 2,226 | 492 | 0.819 | 0.598 | 0.691 | 1 s |
+| Isolation Forest (Detector A) | normal only | 2,116 | 510 | 0.806 | 0.568 | 0.667 | 5 s |
+| One-Class SVM | normal only | 1,491 | 2,624 | 0.362 | 0.401 | 0.381 | 2 s |
+| Local Outlier Factor | normal only | 900 | 182 | 0.832 | 0.242 | 0.375 | 1 s |
+
+What this shows: with an answer key to learn from, HDFS_v1 is almost solved by any supervised technique, which matches published results. Without one, the best technique catches about 60% of problems with roughly one false alarm for every four real catches. PCA edges out Isolation Forest here; both are far ahead of One-Class SVM and LOF at default settings. Real security logs rarely come with an answer key, which is why the live monitor relies on the unsupervised side plus known attack patterns and people's feedback.
+
 Live mode on the same data (first 20,000 newer tasks replayed): checking a task after 30 minutes of quiet caught 326 of 359 real problems with 0 false alarms. Checking after only 1 minute raised 715 false alarms, because real tasks often send their last messages minutes later. Live mode therefore waits 30 minutes of log time on real logs.
 
 Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. On loghub's labelled HDFS_2k sample it groups 99.75% of lines correctly.
@@ -179,6 +196,7 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
     seclog/make_demo.py  generates the made-up demo log
     seclog/formats.py    reads many log formats into one shape
     seclog/rules.py      23 known attack patterns (MITRE ATT&CK)
+    seclog/compare.py    eight machine-learning techniques compared on HDFS_v1
     seclog/evaluate.py   evaluation on real and labelled datasets (loghub SSH, LANL, AIT-LDS)
     seclog/ai.py         live AI: per-address windows, Isolation Forest, plain reasons
     seclog/learning.py   learning from people's answers (feedback loop)
@@ -194,7 +212,7 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               36 tests (python -m pytest)
+    tests/               37 tests (python -m pytest)
 
 ## Credits
 

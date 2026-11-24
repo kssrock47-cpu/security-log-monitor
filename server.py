@@ -315,6 +315,7 @@ def accuracy():
     out = {"labelled": m.get("labelled") == "1", "demo": m.get("demo") == "1", "detectors": []}
     if not out["labelled"]:
         return out
+    out["comparison"] = comparison()
     test = b["alerts"][b["alerts"].split == "test"]
     for _, rr in runs.iterrows():
         t = test[test.model == rr.model]
@@ -326,6 +327,16 @@ def accuracy():
             "precision": rr.precision, "recall": rr.recall, "f1": rr.f1,
             **dots(int(len(real)), int(real.flagged.sum()), int(((t.label != "Anomaly") & (t.flagged == 1)).sum()))})
     return out
+
+
+def comparison():
+    """The eight-technique comparison saved by `python -m seclog.compare`, or None if it hasn't been run."""
+    try:
+        with closing(sqlite3.connect(DB)) as con:
+            row = con.execute("select data from comparison order by run_at desc limit 1").fetchone()
+        return json.loads(row[0]) if row else None
+    except sqlite3.Error:
+        return None
 
 
 def dots(real, caught, false_alarms, most=200):

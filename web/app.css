@@ -328,3 +328,15 @@ dialog::backdrop { background: rgba(11,31,58,.45); }
   .howread .track { flex-wrap: wrap; }
   .hero-text h1 { font-size: 30px; }
 }
+
+/* eight-technique comparison (accuracy page) */
+.cmp-row { display: grid; grid-template-columns: minmax(220px, 2.2fr) minmax(140px, 1.6fr) 1fr 1fr .9fr; gap: 6px 18px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line, #dde3ea); }
+.cmp-row.best .cmp-bar .track span { background: var(--ink); }
+.cmp-name { display: flex; flex-direction: column; gap: 2px; }
+.cmp-name .chip { align-self: flex-start; }
+.cmp-bar { display: flex; align-items: center; gap: 10px; }
+.cmp-bar .track { position: relative; flex: 1; height: 18px; background: var(--mist); border-radius: 6px; overflow: hidden; }
+.cmp-bar .track span { position: absolute; inset: 0 auto 0 0; background: var(--moss); border-radius: 6px; }
+.cmp-bar em { font-style: normal; font-weight: 600; font-size: 15px; color: var(--ink); min-width: 3.2em; font-variant-numeric: tabular-nums; }
+.cmp-tech { grid-column: 1 / -1; color: var(--ink-2); }
+@media (max-width: 760px) { .cmp-row { grid-template-columns: 1fr 1fr; } .cmp-name, .cmp-bar { grid-column: 1 / -1; } }

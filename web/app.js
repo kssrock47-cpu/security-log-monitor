@@ -508,7 +508,37 @@ async function viewAccuracy(view) {
         </table>
       </div>`).join("")}
   </div>
-  <p class="muted small" style="margin-top:18px">Catching more problems usually means more false alarms. That is why each alert shows its evidence: a person can rule out a false alarm in seconds.</p>`;
+  <p class="muted small" style="margin-top:18px">Catching more problems usually means more false alarms. That is why each alert shows its evidence: a person can rule out a false alarm in seconds.</p>
+  ${compareHtml(a.comparison)}`;
+}
+
+/* Eight existing machine-learning techniques, same data, same split (python -m seclog.compare) */
+function compareHtml(c) {
+  if (!c || !c.results || !c.results.length) return "";
+  const used = { "Isolation Forest": "Detector A", "Random Forest": "Detector B" };
+  const secs = (s) => (s < 1 ? "under a second" : s < 90 ? `${Math.round(s)} s` : `${(s / 60).toFixed(1)} min`);
+  const best = Math.max(...c.results.map((r) => r.f1));
+  const row = (r) => `
+    <div class="cmp-row${r.f1 === best ? " best" : ""}">
+      <div class="cmp-name"><b>${esc(r.model)}</b>${used[r.model] ? ` <span class="chip ok">${used[r.model]} in this monitor</span>` : ""}
+        <span class="muted small">${esc(r.plain)}${r.note ? `. <span class="tech-only">${esc(r.note)}</span>` : ""}</span></div>
+      <div class="cmp-bar" role="img" aria-label="F1 score ${r.f1.toFixed(3)}"><div class="track"><span style="width:${Math.max(1, r.f1 * 100)}%"></span></div><em>${r.f1.toFixed(3)}</em></div>
+      <div><b>${fmt(r.caught)}</b> <span class="muted small">of ${fmt(r.real)} caught</span></div>
+      <div><b>${fmt(r.false_alarms)}</b> <span class="muted small">false alarm${r.false_alarms === 1 ? "" : "s"}</span></div>
+      <div class="muted small">learned in ${secs(r.train_seconds)}</div>
+      <div class="tech-only cmp-tech small">P ${r.precision.toFixed(3)} · R ${r.recall.toFixed(3)} · PR-AUC ${r.pr_auc.toFixed(3)}</div>
+    </div>`;
+  const group = (kind, title, text) => {
+    const rs = c.results.filter((r) => r.kind === kind).sort((x, y) => y.f1 - x.f1);
+    return `<h3 style="margin-top:22px">${title}</h3><p class="muted small" style="margin:4px 0 10px">${text}</p>${rs.map(row).join("")}`;
+  };
+  return `<section class="panel cmp" style="margin-top:34px">
+    <h2>Eight techniques compared</h2>
+    <p class="muted" style="margin:6px 0 0">The project brief asks for existing machine-learning techniques to be compared. These are the eight from the standard log anomaly benchmark (He et al., 2016), each run on the same ${fmt(c.results[0].n_train + c.results[0].n_test)} HDFS_v1 tasks: learning from the older ${fmt(c.results[0].n_train)}, tested on the newer ${fmt(c.results[0].n_test)}. The bar is the F1 score, which balances catching problems against raising false alarms (1.0 is perfect).</p>
+    ${group("supervised", "Learned from examples marked normal or problem", "Needs a past record of which tasks were problems.")}
+    ${group("unsupervised", "Learned only what normal looks like", "Needs no answer key, so it also works on logs nobody has labelled. Each raises an alert for anything more unusual than the 3% most unusual older tasks.")}
+    <p class="muted small" style="margin-top:16px">Rerun with <code>python -m seclog.compare</code>. Last run ${esc((c.run_at || "").replace("T", " "))}.</p>
+  </section>`;
 }
 
 /* ---------- 5. how it works ---------- */

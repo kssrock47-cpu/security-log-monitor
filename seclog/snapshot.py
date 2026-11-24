@@ -98,6 +98,10 @@ def export(src_db, out_dir=SNAP_DIR, replay_lines=400_000, log_path=None, allow_
         con.execute("attach database ? as s", (src_db,))
         for t in ("templates", "template_stats", "model_runs", "feedback"):
             con.execute(f"insert into {t} select * from s.{t}")
+        # the eight-technique comparison (python -m seclog.compare), if it has been run
+        if con.execute("select 1 from s.sqlite_master where type='table' and name='comparison'").fetchone():
+            con.execute("create table if not exists comparison (run_at TEXT, data TEXT)")
+            con.execute("insert into comparison select * from s.comparison")
         # every newer task (for the accuracy check), plus every older task that a detector flagged (alert list)
         con.execute("create temp table keep (block_id text primary key)")
         con.execute("insert or ignore into keep select block_id from s.blocks where split='test'")
