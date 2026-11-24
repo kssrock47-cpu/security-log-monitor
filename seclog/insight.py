@@ -110,7 +110,7 @@ STAGES = [
 STAGE_IX = {s[0]: i for i, s in enumerate(STAGES)}
 RULE_STAGE = {
     "scanner": "recon", "web_probe": "recon", "port_scan": "recon",
-    "brute_force": "creds", "spray": "creds", "lockout": "creds",
+    "brute_force": "creds", "spray": "creds", "lockout": "creds", "slow_guess": "creds", "net_guess": "creds",
     "web_attack": "access", "break_in": "access",
     "priv_fail": "admin", "root_shell": "admin", "admin_group": "admin",
     "new_account": "stay", "new_service": "stay",

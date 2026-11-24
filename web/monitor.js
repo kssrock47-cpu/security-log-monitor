@@ -7,7 +7,8 @@
   window.MON = M;
 
   const SEV = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
-  const who = (e) => !e ? "" : e.startsWith("user:") ? `user ${e.slice(5)}` : e.startsWith("host:") ? `machine ${e.slice(5)}` : e;
+  const who = (e) => !e ? "" : e.startsWith("user:") ? `user ${e.slice(5)}` : e.startsWith("host:") ? `machine ${e.slice(5)}`
+    : e.startsWith("net:") ? `network ${e.slice(4).replace(".0.0/16", ".x.x")}` : e;
   const clock = (iso) => (iso || "").slice(11, 19);
   const day = (iso) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   const every = (fn, ms) => { fn(); M.timers.push(setInterval(fn, ms)); };
@@ -228,7 +229,7 @@
           <a class="btn" href="#/lab">Try the attack lab</a>
           <a class="btn ghost" href="#/threats">Review threats</a>
         </div>
-        <div>${techChip("Drain3 message types")} ${techChip("Isolation Forest per 30-second window")} ${techChip("15 attack patterns, MITRE ATT&CK")}</div>
+        <div>${techChip("Drain3 message types")} ${techChip("Isolation Forest per 30-second window")} ${techChip("17 attack patterns, MITRE ATT&CK")}</div>
       </div>
     </section>
     ${first ? `<section class="panel" style="margin-bottom:22px"><h3>Start by connecting some logs</h3>

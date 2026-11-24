@@ -136,7 +136,8 @@ def build(d, story, profile, blocked=None):
     pdf.ln(2)
 
     who = d["entity"]
-    who_text = f"user {who[5:]}" if who.startswith("user:") else f"machine {who[5:]}" if who.startswith("host:") else who
+    who_text = (f"user {who[5:]}" if who.startswith("user:") else f"machine {who[5:]}" if who.startswith("host:")
+                else f"network {who[4:].replace('.0.0/16', '.x.x')}" if who.startswith("net:") else who)
     geo = (profile or {}).get("geo") or {}
     facts = [("Who", who_text), ("Location", geo.get("country") or "-"), ("Seen in", d.get("source_name") or "-"),
              ("First seen (log time)", nice_time(d["first_ts"])), ("Last seen (log time)", nice_time(d["last_ts"])),

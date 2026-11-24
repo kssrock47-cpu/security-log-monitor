@@ -128,3 +128,26 @@ def test_learning_is_saved(tmp_path):
     assert lessons
     m2 = Monitor(str(tmp_path / "m.db"), str(tmp_path / "up2"))
     assert m2.learner.view()["stats"]["false"] == 1 and m2.ai_view()["lessons"]
+
+
+def test_slow_and_distributed_guessing():
+    """Found on the real loghub SSH log: attackers who stay under the fast rule, alone or as a group."""
+    from datetime import datetime, timedelta
+    r, t0 = RuleEngine(), datetime(2026, 11, 20, 0, 0)
+    hits = []
+    for i in range(30):  # one address, 3 failures an hour: never fast enough for the 8-in-2-minutes rule
+        ev = formats.parse(f"Nov 20 {i // 3:02d}:{(i % 3) * 20:02d}:00 h sshd[1]: Failed password for root from 203.0.113.250 port 1 ssh2")
+        hits += r.check(ev, "203.0.113.250")
+    assert {h["rule"] for h in hits if not h["update"]} == {"slow_guess"}
+    r2, hits2 = RuleEngine(), []
+    for i in range(48):  # six addresses in one network, taking turns
+        ip = f"183.136.{170 + i % 6}.{20 + i % 6}"
+        ev = formats.parse(f"Nov 20 01:{i:02d}:00 h sshd[1]: Failed password for admin from {ip} port 1 ssh2")
+        hits2 += r2.check(ev, ip)
+    assert any(h["rule"] == "net_guess" and h["entity"] == "net:183.136.0.0/16" for h in hits2)
+    r3, hits3 = RuleEngine(), []
+    for i in range(40):  # a member of staff with many typos who always logs in afterwards is not an attacker
+        for line in (f"Nov 20 {i // 4:02d}:{(i % 4) * 15:02d}:00 h sshd[1]: Failed password for bob from 10.0.0.12 port 1 ssh2",
+                     f"Nov 20 {i // 4:02d}:{(i % 4) * 15:02d}:05 h sshd[1]: Accepted password for bob from 10.0.0.12 port 1 ssh2"):
+            hits3 += r3.check(formats.parse(line), "10.0.0.12")
+    assert not hits3

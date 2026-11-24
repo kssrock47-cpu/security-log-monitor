@@ -4,9 +4,21 @@ Each rule watches a short sliding window per attacker and fires once per cooldow
 so a long attack becomes one alert with a growing count, not hundreds of alerts.
 MITRE ATT&CK ids are shown when "technical terms" is switched on.
 """
+import ipaddress
 import re
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import timedelta
+from functools import lru_cache
+
+
+@lru_cache(maxsize=100000)
+def _outside_v4(ip):
+    """True for a public IPv4 address (cached: it is asked for every failed login)."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.version == 4 and not (a.is_private or a.is_loopback)
 
 SQLI = re.compile(r"(?:%27|')\s*(?:or|and|union)\b|union(?:\s|%20|\+)+select|select(?:\s|%20|\+).+from|"
                   r"sleep\(|benchmark\(|information_schema|--(?:\s|%20|$)|/\*.*\*/", re.I)
@@ -49,6 +61,14 @@ RULES = {
                     "Check the service name and file. Attackers install services to keep running after a restart."),
     "lockout": ("An account was locked after too many wrong passwords", "medium", "T1110 Brute Force",
                 "Find out who tried. If it wasn't the account owner, someone may be guessing its password."),
+    # found by testing on the real loghub SSH server log: attackers who stay under the fast rule
+    "slow_guess": ("Someone is guessing passwords slowly, to stay under the radar", "medium",
+                   "T1110.001 Brute Force: Password Guessing",
+                   "Block this address. Guessing a few passwords an hour for days is deliberate; check that the "
+                   "targeted accounts use strong passwords or keys."),
+    "net_guess": ("Many addresses from one network are guessing passwords together", "high", "T1110 Brute Force (distributed)",
+                  "Several addresses are sharing the work so each stays below the alarm. Block the network range at "
+                  "the firewall if you have no users there, and check the targeted accounts."),
 }
 
 
@@ -59,6 +79,10 @@ class RuleEngine:
         self.http4 = defaultdict(deque)        # ip -> (time, path)
         self.ports = defaultdict(deque)        # ip -> (time, port)
         self.priv = defaultdict(deque)
+        self.slow = defaultdict(deque)         # ip -> times of failed logins, last 24 hours
+        self.oks = defaultdict(deque)          # ip -> times of successful logins, last 24 hours
+        self.nets = defaultdict(deque)         # network (first two numbers) -> (time, ip), last 6 hours
+        self.net_ips = defaultdict(Counter)    # network -> failures per address in that window (a running tally)
         self.last_fired = {}                   # (rule, entity) -> time
 
     @staticmethod
@@ -75,6 +99,38 @@ class RuleEngine:
         title, sev, mitre, advice = RULES[rule]
         return {"rule": rule, "entity": ent, "update": False, "title": title, "severity": sev, "mitre": mitre,
                 "advice": advice, "detail": detail}
+
+    def _slow_and_spread(self, ip, now):
+        out = []
+        dq, ok = self.slow[ip], self.oks[ip]
+        dq.append(now)
+        self._trim(dq, now, 86400)
+        self._trim(ok, now, 86400)
+        fast = self.last_fired.get(("brute_force", ip))
+        recently_fast = fast is not None and (now - fast).total_seconds() < 86400
+        # 20+ failures in a day, almost never a successful login (a person with typos logs in afterwards)
+        if len(dq) >= 20 and len(dq) >= 9 * len(ok) and not recently_fast:
+            span = (dq[-1] - dq[0]).total_seconds() / 3600
+            out.append(self._fire("slow_guess", ip, now, f"{len(dq)} failed logins over {span:.1f} hours, never "
+                                  "enough at once to look like fast guessing", cooldown=6 * 3600))
+        if _outside_v4(ip):
+            key = ".".join(ip.split(".")[:2])
+            dn, tally = self.nets[key], self.net_ips[key]
+            dn.append((now, ip))
+            tally[ip] += 1
+            while dn and (now - dn[0][0]).total_seconds() > 6 * 3600:
+                _, old = dn.popleft()
+                tally[old] -= 1
+                if not tally[old]:
+                    del tally[old]
+            if len(tally) >= 4 and len(dn) >= 40:
+                ent = f"net:{key}.0.0/16"
+                detail = f"{len(tally)} addresses from {key}.x.x made {len(dn)} failed logins in 6 hours"
+                last = self.last_fired.get(("net_guess", ent))
+                if last is None or (now - last).total_seconds() >= 6 * 3600:  # examples only when the alert is new
+                    detail += ", for example " + ", ".join(sorted(tally)[:3])
+                out.append(self._fire("net_guess", ent, now, detail, cooldown=6 * 3600))
+        return out
 
     def check(self, ev: dict, ent: str) -> list:
         """Return a list of rule hits for this event (usually empty)."""
@@ -98,7 +154,11 @@ class RuleEngine:
                 if len(users) >= 5:
                     out.append(self._fire("spray", k, now, f"{len(users)} different usernames tried in 5 minutes, "
                                           f"for example {', '.join(sorted(users)[:4])}"))
+        if ev.get("outcome") == "fail" and ev["fmt"] != "web" and ip:
+            out += self._slow_and_spread(ip, now)
         if ev.get("outcome") == "success" and ip:
+            self.oks[ip].append(now)
+            self._trim(self.oks[ip], now, 86400)
             dq = self.fails.get(ip)
             if dq:
                 recent = [t for t in dq if (now - t).total_seconds() <= 180]

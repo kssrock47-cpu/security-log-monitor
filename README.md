@@ -18,7 +18,7 @@ It takes security logs from anywhere, watches them live or checks them offline, 
 * **Reads:** Linux syslog and auth.log (SSH, sudo, useradd, firewall), Apache and Nginx web logs, Windows events (live or `.evtx`), JSON lines, HDFS and plain text.
 * **Finds threats two ways:**
   * **AI:** an Isolation Forest learns what normal looks like for each address or user over 30-second windows, then flags anything unusual.
-  * **Known attack patterns:** 15 patterns, including password guessing, password spraying, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
+  * **Known attack patterns:** 17 patterns, including password guessing (fast, slow, and spread over a network), password spraying, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
 * **Learns and adapts** in three ways:
   * It learns normal behaviour when a connection starts. For a file you drop in, it first reads the whole file, learns what is normal for that file, then judges every part of it (offline mode).
   * It re-learns normal every few minutes, so it keeps up as things change.
@@ -108,6 +108,26 @@ Live mode on the same data (first 20,000 newer tasks replayed): checking a task 
 
 Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. On loghub's labelled HDFS_2k sample it groups 99.75% of lines correctly.
 
+## Tested on real-world logs
+
+`python -m seclog.evaluate ssh <SSH.log>` runs a whole log through the monitor in its own throwaway database and writes `data/eval/ssh.json`.
+
+**Loghub OpenSSH: a real SSH server on the internet** (655,147 lines, about a month, unlabelled; download: https://zenodo.org/records/3227177/files/SSH.tar.gz?download=1).
+Testing on it showed two weaknesses, which were then fixed and measured again on the same log:
+
+| | Before | After |
+|---|---|---|
+| Alerts | 4,591 | 1,924 |
+| Alerts per 1,000 lines | 7.0 | 2.9 |
+| Most alerts for one address | 594 | 86 |
+| Addresses with 20+ failed logins that were flagged | 267 of 305 (87.5%) | 302 of 305 (99.0%) |
+| Speed on a laptop | 4,400 lines a second | 6,250 lines a second |
+
+* **Slow guessing:** some attackers stayed under the "8 failures in 2 minutes" rule, for example 1,707 failures over 12 days at most 9 an hour. New rule: 20+ failures in 24 hours with almost no successful logins (staff typos are followed by a login, so they don't count).
+* **Distributed guessing:** groups of addresses in one network took turns (183.136.x.x, 122.224.x.x, 115.233.91.x). New rule: 4+ addresses from one network with 40+ failures in 6 hours; 4 such networks found.
+* **Alert fatigue:** a long attack raised a new alert every 5 minutes. Now an ongoing attack updates its open alert for as long as it continues (until a person marks it).
+* No successful break-in was found. 66 alerts came from the AI. The 3 addresses still missed spread fewer than 20 attempts over each day.
+
 ## What is real and what is not
 
 * `data/sample/demo_hdfs_style.log` and `demo_labels.csv` are **made up** by `seclog/make_demo.py`, built to look like HDFS logs. They show how the monitor works. **Numbers on them are not research results.**
@@ -134,7 +154,8 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
     seclog/live.py       live replay: parse and check tasks as lines arrive
     seclog/make_demo.py  generates the made-up demo log
     seclog/formats.py    reads many log formats into one shape
-    seclog/rules.py      15 known attack patterns (MITRE ATT&CK)
+    seclog/rules.py      17 known attack patterns (MITRE ATT&CK)
+    seclog/evaluate.py   evaluation on real and labelled datasets (loghub SSH, LANL, AIT-LDS)
     seclog/ai.py         live AI: per-address windows, Isolation Forest, plain reasons
     seclog/learning.py   learning from people's answers (feedback loop)
     seclog/sources.py    connections: file, folder, web address, syslog, Windows events, attack lab
@@ -149,7 +170,7 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               32 tests (python -m pytest)
+    tests/               33 tests (python -m pytest)
 
 ## Credits
 

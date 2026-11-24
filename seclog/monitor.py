@@ -107,6 +107,9 @@ class Monitor:
         self.flock = threading.Lock()
         self.next_event = (self._one("select max(id) from events") or 0) + 1
         self.ev_buf = []
+        self.upd: dict = {}  # alert id -> [extra count, last time, latest detail], saved in batches
+        self.rule_open: dict = {}  # (source, who, rule) -> [alert id, last time]: the open alert an attack keeps updating
+        self.ulock = threading.Lock()
         self.entities: dict = {}
         self.buckets = deque(maxlen=360)  # 10-second buckets of activity for the last hour
         self.recent_rate = deque(maxlen=50)
@@ -293,6 +296,17 @@ class Monitor:
             return False
         return bool(until)
 
+    def _queue_update(self, aid, ts, detail):
+        """A repeat of an open alert: count it in memory, save in one batch (saving each one is slow on Windows)."""
+        with self.ulock:
+            u = self.upd.get(aid)
+            if u:
+                u[0] += 1
+                u[1] = max(u[1], ts)
+                u[2] = detail
+            else:
+                self.upd[aid] = [1, ts, detail]
+
     def _rule_alert(self, sid, hit, ev):
         ts = ev["ts"].isoformat(timespec="seconds")
         if self.is_blocked(hit["entity"]):
@@ -301,14 +315,29 @@ class Monitor:
             if not hit["update"]:
                 self.learner.count("avoided")  # a person said this one was a false alarm before
             return
+        key = (sid, hit["entity"], hit["rule"])
+        o = self.rule_open.get(key)
         if hit["update"]:
-            row = self._rows("select id from alerts where source_id=? and entity=? and rule=? order by id desc limit 1",
-                             (sid, hit["entity"], hit["rule"]))
-            if row:
-                self._exec("update alerts set count=count+1, last_ts=?, detail=? where id=?", (ts, hit["detail"], row[0][0]))
-                self._push("alert_update", {"id": row[0][0]})
+            if o:
+                o[1] = max(o[1], ts)
+                self._queue_update(o[0], ts, hit["detail"])
+            else:
+                row = self._rows("select id from alerts where source_id=? and entity=? and rule=? order by id desc limit 1", key)
+                if row:
+                    self._queue_update(row[0][0], ts, hit["detail"])
             return
-        self._new_alert(sid, hit["entity"], "pattern", hit["rule"], hit["severity"], hit["title"], hit["detail"], [],
+        # one attack, one alert: while the same attack carries on (within 30 minutes), update the open alert
+        since = (ev["ts"] - timedelta(minutes=30)).isoformat(timespec="seconds")
+        if o is None:  # e.g. after a restart: look in the database
+            row = self._rows("select id, last_ts from alerts where source_id=? and entity=? and rule=? and status='new' "
+                             "order by id desc limit 1", key)
+            o = self.rule_open[key] = [row[0][0], row[0][1]] if row else None
+        if o and o[1] >= since:
+            o[1] = max(o[1], ts)
+            self._queue_update(o[0], ts, hit["detail"])
+            return
+        self.rule_open[key] = [None, ts]
+        self.rule_open[key][0] = self._new_alert(sid, hit["entity"], "pattern", hit["rule"], hit["severity"], hit["title"], hit["detail"], [],
                         hit["advice"], hit["mitre"], None, None, ts, ts,
                         features=self.ai[sid].current_features(hit["entity"]))
 
@@ -402,6 +431,15 @@ class Monitor:
                 self._push("error", {"text": str(e)[:200]})
 
     def _flush_events(self):
+        if self.upd:
+            with self.ulock:
+                upd, self.upd = self.upd, {}
+            with self.dbl:
+                self.con.executemany("update alerts set count=count+?, last_ts=max(last_ts, ?), detail=? where id=?",
+                                     [(n, ts, d, aid) for aid, (n, ts, d) in upd.items()])
+                self.con.commit()
+            for aid in upd:
+                self._push("alert_update", {"id": aid})
         if not self.ev_buf:
             return
         buf, self.ev_buf = self.ev_buf, []
@@ -508,6 +546,9 @@ class Monitor:
             raise KeyError(aid)
         old, kind, rule, ent, feats, title = r[0]
         self._exec("update alerts set status=? where id=?", (status, aid))
+        if status != "new":  # a person has dealt with it: the next attack gets a fresh alert
+            for k in [k for k, v in self.rule_open.items() if v and v[0] == aid]:
+                del self.rule_open[k]
         lessons = []
         if status in ("real", "false") and status != old:
             lessons = self.learner.learn(status, kind, rule, ent, json.loads(feats or "[]"), title)
@@ -826,6 +867,9 @@ class Monitor:
             self.con.execute("update lessons set alert_id=NULL")
             self.con.commit()
         self.entities.clear()
+        self.rule_open.clear()
+        with self.ulock:
+            self.upd.clear()
         self.buckets.clear()
         self.blocks.clear()
         for sid in list(self.rules):
