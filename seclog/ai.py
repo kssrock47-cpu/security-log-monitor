@@ -6,6 +6,9 @@ users, pages and ports, errors, plus how often each message type appeared.
 An Isolation Forest learns from the first windows (the learning period), then scores
 every new window. Anything far outside normal raises an alert, with the reason in plain words.
 The model retrains now and then on recent windows it judged normal, so it keeps up.
+
+Offline mode (for files you drop in): the AI first reads the whole file, learns what is normal
+for that file, then judges every window in it, so short files are checked too.
 """
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -44,8 +47,12 @@ class _Win:
 
 
 class WindowAI:
-    def __init__(self, window_secs=30, learn_windows=120, quantile=0.995, retrain_every=400, learner=None):
+    OFFLINE_CAP = 150000  # windows kept in memory for offline mode; bigger files fall back to streaming
+
+    def __init__(self, window_secs=30, learn_windows=120, quantile=0.995, retrain_every=400, learner=None, offline=False):
         self.ws = window_secs
+        self.offline = offline
+        self.held: list = []        # offline mode: every window, judged once the whole file is read
         self.learner = learner  # shared lessons from people's answers (learning.py); None = defaults only
         self.retrains = 0
         self.trained_on = 0
@@ -68,7 +75,9 @@ class WindowAI:
 
     @property
     def progress(self):
-        return 1.0 if self.model is not None else min(1.0, len(self.train) / self.learn_n)
+        if self.model is not None:
+            return 1.0
+        return min(0.95, len(self.held) / 2000) if self.offline else min(1.0, len(self.train) / self.learn_n)
 
     def _key(self, ent, ts):
         start = int(ts.timestamp()) // self.ws * self.ws
@@ -106,6 +115,19 @@ class WindowAI:
         return self._judge(list(self.open.items()), final=True) + ([] if self.open.clear() else [])
 
     def _judge(self, items, final=False):
+        if self.offline and self.model is None:
+            self.held.extend(items)
+            if not final and len(self.held) < self.OFFLINE_CAP:
+                return []
+            items, self.held = self.held, []
+            if len(items) < 20:
+                return []  # too little to learn anything from
+            X = np.vstack([w.vector() for _, w in items])
+            self.train = list(X)
+            self.train_raw = [w.raw() for _, w in items]
+            self._fit(X)
+            self.offline = False  # anything after this (a very big file) is judged as it streams
+            return self._score(items, X)
         out = []
         if not items:
             return out
@@ -119,6 +141,10 @@ class WindowAI:
                 return out
             # windows that completed the learning set are not judged
             return out
+        return self._score(items, X)
+
+    def _score(self, items, X):
+        out = []
         scores = -self.model.score_samples(X)
         L = self.learner
         for (k, w), x, s in zip(items, X, scores):

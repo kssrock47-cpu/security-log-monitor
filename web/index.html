@@ -75,9 +75,11 @@
   <form class="modal" method="dialog" id="runForm">
     <h2 id="runTitle">Re-run the HDFS check</h2>
     <div class="seg tabs" role="group" aria-label="Which logs">
+      <button type="button" data-mode="snapshot" aria-pressed="false">Saved HDFS_v1 results</button>
       <button type="button" data-mode="demo" aria-pressed="true">Demo logs</button>
       <button type="button" data-mode="file" aria-pressed="false">My own file</button>
     </div>
+    <div id="modeSnap" hidden><p class="muted">Brings back the real HDFS_v1 results that come with the project (11 million lines, the official answer key). Takes a few seconds.</p></div>
     <div id="modeDemo"><p class="muted">Runs the whole research check again on the made-up demo logs. This replaces the results shown in Research.</p></div>
     <div id="modeFile" hidden>
       <div class="stack" style="gap:12px">

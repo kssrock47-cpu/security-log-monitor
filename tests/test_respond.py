@@ -71,3 +71,41 @@ def test_map_groups_by_country(tmp_path):
     # the upload is old log time, but entities are counted by when they were seen
     d = m.map_data(60)
     assert d["points"] and d["countries"] and all("risk" in p for p in d["points"])
+
+
+def test_ai_checks_whole_uploaded_file(tmp_path):
+    """Offline mode: a quiet data theft hidden in a file is caught by the AI, not by any known pattern."""
+    from datetime import datetime, timedelta
+    from seclog.simulator import Simulator
+    sim = Simulator(lambda line: None, seed=7)
+    t, end = datetime(2026, 11, 20, 9, 0), datetime(2026, 11, 20, 9, 45)
+    lines, thief = [], "45.155.205.77"
+    while t < end:
+        lines += sim._normal(t)
+        t += timedelta(seconds=sim.r.expovariate(sim.rate))
+    t = datetime(2026, 11, 20, 9, 30)
+    for i in range(150):  # 150 invoices in 18 seconds, half an hour into the file
+        lines.append(sim._web(t + timedelta(seconds=i * 0.12), thief, f"/invoices/INV-{24000 + i}.pdf", 200, "Mozilla/5.0"))
+    p = tmp_path / "web.log"
+    p.write_text("\n".join(lines))
+    m = Monitor(str(tmp_path / "m.db"), str(tmp_path / "up"))
+    sid = m.add_source("upload", "web.log", {"path": str(p)})
+    assert _wait(lambda: sid in m.flushed, 60)
+    time.sleep(0.5)
+    hits = [a for a in m.alerts() if a["entity"] == thief]
+    assert hits and all(a["kind"] == "ai" for a in hits)
+
+
+def test_radar_remembers_after_restart(tmp_path):
+    m = Monitor(str(tmp_path / "m.db"), str(tmp_path / "up"))
+    m.add_source("simulator", "Attack lab", {})
+    assert _wait(lambda: m.simulator() and m.simulator().sim.ready, 30)
+    time.sleep(2)
+    a = m.simulator().sim.launch("brute_force")
+    assert _wait(lambda: a["detected"], 30)
+    m._flush_events()
+    m.stop_source(m.simulator().sid)
+    m2 = Monitor(str(tmp_path / "m.db"), str(tmp_path / "up2"))
+    ents = {e["entity"]: e for e in m2.entity_list(15, 600)}
+    assert a["ip"] in ents and ents[a["ip"]]["alerts"] >= 1 and ents[a["ip"]]["risk"] > 0
+    assert m2.stats()["buckets"]

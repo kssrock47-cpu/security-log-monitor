@@ -593,6 +593,7 @@ $$("#runForm [data-mode]").forEach((b) => b.addEventListener("click", () => {
   runMode = b.dataset.mode;
   $$("#runForm [data-mode]").forEach((x) => x.setAttribute("aria-pressed", x === b));
   $("#modeDemo").hidden = runMode !== "demo";
+  $("#modeSnap").hidden = runMode !== "snapshot";
   $("#modeFile").hidden = runMode !== "file";
 }));
 $("#runGo").addEventListener("click", async () => {

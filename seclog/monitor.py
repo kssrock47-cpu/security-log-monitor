@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY, template TEXT);
 CREATE TABLE IF NOT EXISTS blocks (entity TEXT PRIMARY KEY, created REAL, until REAL, alert_id INTEGER, mode TEXT);
 CREATE INDEX IF NOT EXISTS ev_entity2 ON events(entity, ts);
 CREATE INDEX IF NOT EXISTS al_entity ON alerts(entity);
+CREATE INDEX IF NOT EXISTS ev_ts ON events(ts);
 """
 
 PLAIN = [
@@ -78,7 +79,7 @@ class Monitor:
     def __init__(self, db_path, upload_dir):
         self.db_path, self.upload_dir = db_path, upload_dir
         os.makedirs(upload_dir, exist_ok=True)
-        self.con = sqlite3.connect(db_path, check_same_thread=False)
+        self.con = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         # WAL + normal sync: safe, and much faster on Windows where every commit otherwise waits for the disk
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA synchronous=NORMAL")
@@ -112,10 +113,39 @@ class Monitor:
         self.total = 0
         self.started = time.time()
         self.blocks = {r[0]: r[1] for r in self._rows("select entity, until from blocks where until>?", (time.time(),))}
+        self._restore_recent()
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._ticker, daemon=True).start()
         for r in self._rows("select id, kind, name, config from sources where enabled=1 and kind!='upload'"):
             self._start(r[0], r[1], r[2], json.loads(r[3]))
+
+    def _restore_recent(self, minutes=60):
+        """After a restart, rebuild 'who's active' and the activity chart from the last hour in the database."""
+        now = time.time()
+        cut = (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        try:
+            rows = self._rows("select entity, count(*), coalesce(sum(outcome='fail'),0), max(ts), min(source_id), "
+                              "max(src_ip=entity) from events where ts>=? group by entity", (cut,))
+            sev = {}
+            for ent, n, s in self._rows("select entity, count(*), max(case severity when 'critical' then 4 when 'high' then 3 "
+                                        "when 'medium' then 2 else 1 end) from alerts where created>=? group by entity", (cut,)):
+                sev[ent] = (n, {4: "critical", 3: "high", 2: "medium", 1: "low"}[s])
+            for ent, n, fails, last, sid, is_ip in rows:
+                n_al, sv = sev.get(ent, (0, None))
+                self.entities[ent] = {"events": n, "fails": fails, "alerts": n_al, "sev": sv, "source": sid,
+                                      "last": min(now, self._epoch(last)), "kind": "ip" if is_ip else ent.split(":")[0]}
+            # the activity chart: 10-second buckets of the last 10 minutes
+            cut10 = (datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds")
+            b = defaultdict(lambda: {"events": 0, "alerts": 0})
+            for ts, in self._rows("select ts from events where ts>=?", (cut10,)):
+                b[int(self._epoch(ts)) // 10 * 10]["events"] += 1
+            for c, in self._rows("select created from alerts where created>=?", (cut10,)):
+                b[int(self._epoch(c)) // 10 * 10]["alerts"] += 1
+            for t in sorted(b):
+                if t <= now:
+                    self.buckets.append({"t": t, **b[t]})
+        except Exception:  # never stop the monitor from starting
+            pass
 
     # ---------------------------------------------------------------- db helpers
     def _rows(self, sql, params=()):
@@ -157,7 +187,8 @@ class Monitor:
     def _start(self, sid, kind, name, config):
         src = KINDS[kind](sid, name, config, self._sink)
         self.sources[sid] = src
-        self.ai[sid] = WindowAI(window_secs=30, learn_windows=60 if kind == "upload" else 120, learner=self.learner)
+        self.ai[sid] = WindowAI(window_secs=30, learn_windows=60 if kind == "upload" else 120, learner=self.learner,
+                                offline=kind == "upload")
         self.rules[sid] = RuleEngine()
         self.flushed.discard(sid)
         src.start()
@@ -348,9 +379,11 @@ class Monitor:
                         if was_learning and not ai.learning:
                             self._push("learned", {"source": sid})
                     if not src.live and src.done and self.pending[sid] <= 0 and sid not in self.flushed:
-                        self.flushed.add(sid)
                         self._flush_events()
-                        self._ai_alerts(sid, ai.flush())
+                        try:
+                            self._ai_alerts(sid, ai.flush())
+                        finally:
+                            self.flushed.add(sid)  # only "finished" once the AI has judged the whole file
                         self._push("source_done", {"source": sid})
                 n = self.total
                 self.recent_rate.append((time.time(), n))

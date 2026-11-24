@@ -20,7 +20,7 @@ It takes security logs from anywhere, watches them live or checks them offline, 
   * **AI:** an Isolation Forest learns what normal looks like for each address or user over 30-second windows, then flags anything unusual.
   * **Known attack patterns:** 15 patterns, including password guessing, password spraying, a login right after guessing, SQL injection and other web attacks, scanners, hidden-page hunting, port scans, admin rights and new accounts, cleared logs, malware, and new services. In technical mode each one is mapped to MITRE ATT&CK.
 * **Learns and adapts** in three ways:
-  * It learns normal behaviour when a connection starts.
+  * It learns normal behaviour when a connection starts. For a file you drop in, it first reads the whole file, learns what is normal for that file, then judges every part of it (offline mode).
   * It re-learns normal every few minutes, so it keeps up as things change.
   * It learns from your answers. "Real threat" makes it more watchful of that behaviour; "False alarm" makes it calmer and stops that exact alert coming back. This is a small reinforcement loop: the sensitivities are the policy and your answers are the reward.
   * The lessons are saved and shared across all connections. The **AI learning** page shows what changed. In the attack lab, "Sneaky data theft" gets through until you confirm a "Quiet data theft" as real; after that the AI catches it.
@@ -37,9 +37,15 @@ It takes security logs from anywhere, watches them live or checks them offline, 
 **2. Research on HDFS_v1 (the FYP evaluation)**
 The full benchmark run on 11,175,629 real log lines: Drain3 parsing, Random Forest and Isolation Forest with a time-ordered split, accuracy against the official answer key, and a replay of the newer logs. Results are below.
 
-## Run it (Windows)
+## Run it
 
-Double-click `run.bat`. The first run sets everything up (needs internet once). After that it works offline and opens http://localhost:8600 in your browser.
+You need Python 3.10 or newer (from https://www.python.org/downloads/; on Windows tick "Add python.exe to PATH" during setup).
+
+* **Windows:** double-click `run.bat`.
+* **Mac or Linux:** run `bash run.sh` in a terminal.
+
+The first run sets everything up (needs internet once, a few minutes). If Python is missing, the launcher says what to install. After that it works offline and opens http://localhost:8600 in your browser.
+The real HDFS_v1 results come with the project (`data/research`, 18 MB), so any PC shows them; there is no need to download the dataset.
 To read the Windows **Security** log (logons, failed passwords), right-click `run.bat` and choose **Run as administrator**.
 For `.evtx` files, also run `pip install python-evtx`.
 
@@ -78,14 +84,16 @@ Training is fair: the detectors learn from the **older 70%** of storage tasks an
 
 ## Run on the real HDFS_v1 dataset
 
-Download HDFS_v1 from loghub: https://zenodo.org/records/8196385/files/HDFS_v1.zip?download=1 and unzip it.
+The results of the full run already come with the project as a small snapshot (`data/research`): every task's result, the log lines of every flagged task, the trained models and the first 400,000 lines of the newer log for the replay. The dashboard unpacks it on first start. "Re-run the HDFS check" > "Saved HDFS_v1 results" brings it back at any time.
+
+To run it yourself, download HDFS_v1 from loghub: https://zenodo.org/records/8196385/files/HDFS_v1.zip?download=1 and unzip it.
 In the dashboard press **Check a log file**, choose **My own file**, and give the paths to `HDFS.log` and `anomaly_label.csv`. Start with the first 1,000,000 lines.
 
 Command-line alternative:
 
     python -m seclog.pipeline --log C:\path\HDFS.log --labels C:\path\anomaly_label.csv --max-lines 1000000
 
-The full file (about 11 million lines) takes about 9 minutes and stays under 2 GB of memory.
+The full file (about 11 million lines) takes about 9 minutes and stays under 2 GB of memory. Afterwards, `python -m seclog.snapshot export` makes a new portable snapshot of the results.
 
 ## Results on HDFS_v1 (full dataset)
 
@@ -134,11 +142,13 @@ Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. 
     seclog/monitor.py    the live engine and its SQLite store
     seclog/insight.py    location, risk score and attack-story steps
     seclog/report.py     PDF incident reports (fonts in seclog/fonts)
+    seclog/snapshot.py   portable copy of the HDFS_v1 results (data/research)
+    run.bat, run.sh      launchers for Windows, and for Mac and Linux
     web/monitor.js       live monitor screens
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               25 tests (python -m pytest)
+    tests/               28 tests (python -m pytest)
 
 ## Credits
 

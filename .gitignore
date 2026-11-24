@@ -10,3 +10,6 @@ data/*.building
 data/full_run.*
 data/monitor.db-wal
 data/monitor.db-shm
+data/research_replay.log
+data/research/*.db
+data/research/*.log

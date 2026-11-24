@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from seclog import insight, pipeline, plain, report
+from seclog import insight, pipeline, plain, report, snapshot
 from seclog.live import LiveEngine
 from seclog.monitor import Monitor
 from seclog.simulator import ATTACKS
@@ -157,7 +157,10 @@ def _progress(msg):
 
 def _do_run(req: RunReq):
     try:
-        if req.mode == "demo":
+        if req.mode == "snapshot":
+            _progress("Unpacking the saved HDFS_v1 results…")
+            snapshot.install(DB)
+        elif req.mode == "demo":
             pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, req.contamination, demo=True, progress=_progress)
         else:
             if not req.log or not os.path.exists(req.log):
@@ -194,7 +197,8 @@ def state():
         return {"has_data": False, "run": RUN}
     m = meta()
     return {"has_data": True, "run": RUN, "demo": m.get("demo") == "1", "source": m.get("source"),
-            "run_at": m.get("run_at"), "labelled": m.get("labelled") == "1"}
+            "run_at": m.get("run_at"), "labelled": m.get("labelled") == "1", "snapshot": m.get("snapshot") == "1",
+            "snapshot_available": snapshot.available()}
 
 
 @app.get("/api/overview")
@@ -204,8 +208,8 @@ def overview():
     n_lines = int(b["meta"].get("n_lines") or q("select count(*) n from log_events")["n"][0])
     n_blocks = int(b["meta"].get("n_blocks") or q("select count(*) n from blocks")["n"][0])
     # timeline: at most ~40 bars
-    t0 = pd.to_datetime(q("select min(first_ts) t from blocks")["t"][0])
-    t1 = pd.to_datetime(q("select max(first_ts) t from blocks")["t"][0])
+    t0 = pd.to_datetime(b["meta"].get("t_min") or q("select min(first_ts) t from blocks")["t"][0])
+    t1 = pd.to_datetime(b["meta"].get("t_max") or q("select max(first_ts) t from blocks")["t"][0])
     span_min = max((t1 - t0).total_seconds() / 60, 1)
     step = next(s for s in [5, 10, 15, 30, 60, 120, 240, 480, 1440, 10_000] if span_min / s <= 40)
     t = by.copy()
@@ -236,7 +240,7 @@ def overview():
             "normal_track": "".join("o" * int(round(r.normal_median)) for _, r in
                                     b["stats"][b["stats"].normal_share >= 0.95].sort_values("typical_pos").iterrows()),
             "test_start": b["meta"].get("test_start"),
-            "n_train": int((q("select count(*) n from blocks where split='train'"))["n"][0]),
+            "n_train": int(b["meta"].get("n_train") or q("select count(*) n from blocks where split='train'")["n"][0]),
             "demo": b["meta"].get("demo") == "1", "max_lines": b["meta"].get("max_lines") or None,
             "live_wait_min": live_wait(b["meta"]) // 60}
 
@@ -372,9 +376,17 @@ def live_wait(m):
 LIVE: dict = {}
 
 
+def replay_log(m):
+    p = m.get("log_path") or ""
+    return p if os.path.isabs(p) else os.path.join(HERE, p)
+
+
 @app.post("/api/live/start")
 def live_start(speed: float = 60):
     m = meta()
+    if not os.path.exists(replay_log(m)):
+        raise HTTPException(409, f"The replay needs the original log file, which isn't on this computer ({m.get('log_path')}). "
+                                 "Use \"Re-run the HDFS check\" to point at it, or restore the saved HDFS_v1 results.")
     sid = uuid.uuid4().hex[:8]
     LIVE[sid] = {"speed": speed, "paused": False, "stop": False}
     return {"sid": sid, "start": m.get("test_start")}
@@ -406,7 +418,7 @@ async def live_stream(sid: str):
         raise HTTPException(404, "No live session.")
     m = meta()
     skip = set(q("select block_id from blocks where split='train'")["block_id"])
-    eng = LiveEngine(pipeline.model_path(DB), m["log_path"], m["test_start"], idle_secs=live_wait(m),
+    eng = LiveEngine(pipeline.model_path(DB), replay_log(m), m["test_start"], idle_secs=live_wait(m),
                      offset=int(m.get("test_offset") or 0), skip_blocks=skip)
 
     async def gen():
@@ -702,8 +714,12 @@ def m_lab_attack(a: Attack):
 def main():
     import uvicorn
     if not has_data():
-        print("First start: running the demo check once…")
-        pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, 0.03, demo=True)
+        if snapshot.available():
+            print("First start: unpacking the saved HDFS_v1 research results…")
+            snapshot.install(DB)
+        else:
+            print("First start: running the demo check once…")
+            pipeline.run(DEMO_LOG, DB, DEMO_LABELS, None, 0.03, demo=True)
     # prepare the dashboard data in the background, so the first page opens quickly
     threading.Thread(target=lambda: has_data() and bundle(), daemon=True).start()
     url = f"http://localhost:{PORT}"
