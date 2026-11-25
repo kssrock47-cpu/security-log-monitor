@@ -8,6 +8,7 @@ import ipaddress
 import os
 import re
 from collections import Counter, defaultdict, deque
+from itertools import islice
 from datetime import timedelta
 from functools import lru_cache
 
@@ -103,20 +104,53 @@ RULES = {
 }
 
 
+class Distinct:
+    """The different things (paths, ports, usernames, names) seen in a sliding time window, kept as a running
+    tally so each new event costs the same however busy the window is (a 400,000-request scan stays fast)."""
+    __slots__ = ("dq", "c")
+
+    def __init__(self):
+        self.dq, self.c = deque(), Counter()
+
+    def add(self, now, x, secs):
+        """Add x at time now, forget anything older than secs. Returns the things that left the window."""
+        self.dq.append((now, x))
+        self.c[x] += 1
+        gone = []
+        while self.dq and (now - self.dq[0][0]).total_seconds() > secs:
+            _, old = self.dq.popleft()
+            self.c[old] -= 1
+            if not self.c[old]:
+                del self.c[old]
+                gone.append(old)
+        return gone
+
+    def __len__(self):
+        return len(self.c)
+
+    def __contains__(self, x):
+        return x in self.c
+
+    def examples(self, k, full):
+        """k examples: sorted when the alert is new (full), otherwise any k (cheap)."""
+        return sorted(self.c)[:k] if full else list(islice(self.c, k))
+
+
 class RuleEngine:
     def __init__(self):
         self.fails = defaultdict(deque)        # ip -> times of failed logins
-        self.fail_users = defaultdict(deque)   # ip -> (time, user)
-        self.http4 = defaultdict(deque)        # ip -> (time, path)
-        self.ports = defaultdict(deque)        # ip -> (time, port)
+        self.fail_users = defaultdict(Distinct)  # ip -> usernames tried, last 5 minutes
+        self.http4 = defaultdict(Distinct)       # ip -> missing or forbidden pages, last minute
+        self.http4_sens = defaultdict(int)       # ip -> how many of those look sensitive (.env, backups, admin, ...)
+        self.ports = defaultdict(Distinct)       # ip -> ports knocked on, last minute
         self.priv = defaultdict(deque)
         self.slow = defaultdict(deque)         # ip -> times of failed logins, last 24 hours
         self.oks = defaultdict(deque)          # ip -> times of successful logins, last 24 hours
         self.nets = defaultdict(deque)         # network (first two numbers) -> (time, ip), last 6 hours
         self.net_ips = defaultdict(Counter)    # network -> failures per address in that window (a running tally)
         self.dns_long = defaultdict(deque)     # computer -> times of very long DNS lookups, last 5 minutes
-        self.dns_names = defaultdict(deque)    # (computer, domain) -> (time, name) of lookups, last minute
-        self.dns_ptr = defaultdict(deque)      # computer -> (time, name) of reverse lookups, last minute
+        self.dns_names = defaultdict(Distinct)   # (computer, domain) -> names looked up, last minute
+        self.dns_ptr = defaultdict(Distinct)     # computer -> reverse lookups, last minute
         self.user_places = defaultdict(Counter)  # user -> address -> successful logins
         self.last_fired = {}                   # (rule, entity) -> time
         # for fair before/after evaluations: SECLOG_DISABLE_RULES=dns_tunnel,dns_scan,...
@@ -126,6 +160,11 @@ class RuleEngine:
     def _trim(dq, now, secs):
         while dq and (now - (dq[0][0] if isinstance(dq[0], tuple) else dq[0])).total_seconds() > secs:
             dq.popleft()
+
+    def _fresh(self, rule, ent, now, cooldown=300):
+        """Would this rule raise a new alert (not just update the open one)? Then it's worth detailed examples."""
+        last = self.last_fired.get((rule, ent))
+        return last is None or (now - last).total_seconds() >= cooldown
 
     def _fire(self, rule, ent, now, detail, cooldown=300):
         key = (rule, ent)
@@ -189,14 +228,10 @@ class RuleEngine:
                         continue
                     if not kind and qtype == "PTR":
                         continue
-                    dq_.append((now, name))
-                    while dq_ and (now - dq_[0][0]).total_seconds() > 60:
-                        dq_.popleft()
+                    dq_.add(now, name, 60)
                     if len(dq_) >= need:
-                        names = {n for _, n in dq_}
-                        if len(names) >= need:
-                            out.append(self._fire(rule, ip, now, f"{len(names)} different names looked up in a minute, "
-                                                  f"for example {sorted(names)[0][:60]}"))
+                        out.append(self._fire(rule, ip, now, f"{len(dq_)} different names looked up in a minute, "
+                                              f"for example {dq_.examples(1, self._fresh(rule, ip, now))[0][:60]}"))
                 if len(name) > 100 or max((len(p) for p in name.split(".")), default=0) > 50:
                     dq = self.dns_long[ip]
                     dq.append(now)
@@ -246,13 +281,11 @@ class RuleEngine:
             if len(dq) >= 8:
                 out.append(self._fire("brute_force", k, now, f"{len(dq)} failed logins in the last 2 minutes"))
             if ev.get("user"):
-                du = self.fail_users[k]
-                du.append((now, ev["user"]))
-                self._trim(du, now, 300)
-                users = {u for _, u in du}
+                users = self.fail_users[k]
+                users.add(now, ev["user"], 300)
                 if len(users) >= 5:
                     out.append(self._fire("spray", k, now, f"{len(users)} different usernames tried in 5 minutes, "
-                                          f"for example {', '.join(sorted(users)[:4])}"))
+                                          f"for example {', '.join(users.examples(4, self._fresh('spray', k, now)))}"))
         if ev.get("outcome") == "fail" and ev["fmt"] != "web" and ip:
             out += self._slow_and_spread(ip, now)
         if ev.get("outcome") == "success" and ip and ev.get("user"):
@@ -286,20 +319,22 @@ class RuleEngine:
             if ev.get("ua") and SCANNER_UA.search(ev["ua"]):
                 out.append(self._fire("scanner", ip, now, f"Tool: {ev['ua'][:80]}", cooldown=900))
             if ev.get("status") and 400 <= ev["status"] < 500:
-                dq = self.http4[ip]
-                dq.append((now, p))
-                self._trim(dq, now, 60)
-                paths = {x for _, x in dq}
-                if len(paths) >= 15 or (len(paths) >= 5 and any(SENSITIVE_PATH.search(x) for x in paths)):
-                    out.append(self._fire("web_probe", ip, now, f"{len(paths)} missing or forbidden pages in a minute, "
-                                          f"for example {', '.join(sorted(paths)[:3])}"))
+                paths = self.http4[ip]
+                new = p not in paths
+                for old in paths.add(now, p, 60):
+                    if SENSITIVE_PATH.search(old):
+                        self.http4_sens[ip] -= 1
+                if new and p in paths and SENSITIVE_PATH.search(p):
+                    self.http4_sens[ip] += 1
+                n = len(paths)
+                if n >= 15 or (n >= 5 and self.http4_sens[ip] > 0):
+                    out.append(self._fire("web_probe", ip, now, f"{n} missing or forbidden pages in a minute, "
+                                          f"for example {', '.join(paths.examples(3, self._fresh('web_probe', ip, now)))}"))
 
         # --- network ----------------------------------------------------------------
         if ev.get("port") and ip and ("BLOCK" in msg or "DROP" in msg or "DENY" in msg.upper() or eid == 5157):
-            dq = self.ports[ip]
-            dq.append((now, ev["port"]))
-            self._trim(dq, now, 60)
-            ports = {x for _, x in dq}
+            ports = self.ports[ip]
+            ports.add(now, ev["port"], 60)
             if len(ports) >= 15:
                 out.append(self._fire("port_scan", ip, now, f"{len(ports)} different ports knocked on in a minute"))
 

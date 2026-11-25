@@ -1,5 +1,5 @@
 {
-  "dataset": "AIT Log Data Set V2.0, scenario ait_russellmitchell",
+  "dataset": "AIT Log Data Set V2.0, scenario russellmitchell",
   "rules": "all rules",
   "steps_detected": 10,
   "steps": 12,
@@ -140,7 +140,7 @@
       ]
     },
     {
-      "step": "foothold",
+      "step": "Other attacker activity",
       "label": "foothold",
       "lines": 4,
       "lines_covered": 4,
@@ -168,7 +168,7 @@
         "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
         "Unusual behaviour the AI hasn't seen before (host:dnsmasq)"
       ],
-      "seconds": 145.5
+      "seconds": 193.0
     },
     {
       "file": "internal_share\\logs\\audit\\audit.log",
@@ -196,7 +196,7 @@
       "false_alarm_examples": [
         "An automated attack tool is probing the website (172.19.131.174)"
       ],
-      "seconds": 29.5
+      "seconds": 4.0
     },
     {
       "file": "intranet_server\\logs\\apache2\\intranet.smith.russellmitchell.com-error.log.2",
@@ -249,5 +249,5 @@
       "seconds": 2.0
     }
   ],
-  "seconds": 204.4
+  "seconds": 236.2
 }

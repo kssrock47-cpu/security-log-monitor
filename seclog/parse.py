@@ -42,9 +42,13 @@ def make_miner(live: bool = False) -> TemplateMiner:
         # data stolen over DNS turns every lookup into a new random name, and each one became a new message
         # type, slowing everything down. Long random strings and domain names are masked first, and the number
         # of message types is capped (least used are forgotten).
+        # Found on the second AIT-LDS scenario: a web scan asks for 400,000 different pages, and every top-level
+        # page (/admin, /backup, ...) became its own message type until matching each line took seconds. In live
+        # mode every path is masked, one level deep or many (how many pages someone asks for is an AI feature).
         cfg.masking_instructions[2:2] = [
             MaskingInstruction(r"(?<![\w*/+=.-])[\w*/+=.-]{30,}(?![\w*/+=.-])", "LONG"),
             MaskingInstruction(r"(?<![\w.-])(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?![\w.-])", "HOST"),
+            MaskingInstruction(r"(?<![\w.:/<>-])/[^\s\"']*", "PATH"),
         ]
         cfg.drain_max_clusters = 5000
     return TemplateMiner(config=cfg)

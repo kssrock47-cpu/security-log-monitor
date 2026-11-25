@@ -158,7 +158,21 @@ Testing on it first meant teaching the monitor four formats it misread (dnsmasq,
 
 Caught: dirb and WPScan scans (100% of lines), webshell upload (100%), webshell commands (73%), nmap service scan (100%), DNS name guessing (100%), the website account switching user, sudo reading /etc/shadow, data theft over DNS.
 Missed: a reverse-lookup network sweep (too spread out for the rule) and the attacker's VPN login with a stolen certificate (the account had too few earlier logins to compare with).
-The 6 rules were added after the first run, so this scenario is no longer a fair test of them; each is a standard detection with general thresholds (DNS tunnelling, website account using su, sudo on /etc/shadow, DNS name guessing, reverse-lookup sweep, login from a new address). **The fair check is another AIT-LDS scenario not looked at during development (planned).**
+The 6 rules were added after the first run, so this scenario is no longer a fair test of them; each is a standard detection with general thresholds (DNS tunnelling, website account using su, sudo on /etc/shadow, DNS name guessing, reverse-lookup sweep, login from a new address).
+
+**Hold-out check on a scenario not looked at during development (fox).** Same attack steps, different company, different timing, and a much bigger web scan (410,000 requests). Nothing was tuned on it. `python -m seclog.evaluate ait-extract fox.zip <folder>` unpacks just the 23 files the evaluation reads (0.2 of 15.8 GB).
+
+| fox (hold-out) | Without the 6 rules | With the 6 rules |
+|---|---|---|
+| Attack steps detected | 6 of 12 | **11 of 12** |
+| Attack lines inside an alert | 412,812 of 456,838 | 455,276 of 456,838 |
+| Data theft over DNS, lines covered | 4% | **100%** |
+| False alarms | 57 in 219,961 normal lines (0.26 per 1,000) | 57 (unchanged) |
+
+* The 6 rules carry over: on unseen data they add 5 attack steps (DNS name guessing, the reverse-lookup sweep that russellmitchell's was too spread out for, the website account switching user, sudo commands, other attacker activity) and raise no false alarms of their own.
+* Still missed: the attacker's VPN login, as on russellmitchell.
+* Weak point: 54 of the 57 false alarms are the AI flagging the DNS server's own busy periods. On this scenario the AI is noisier than on russellmitchell (0.07 per 1,000); making it adapt to each server's normal rhythm is FYP2 work.
+* The big scan exposed two slow spots, both fixed: the hidden-page rule re-counted the last minute's pages on every line, and every top-level page (/admin, /backup, ...) became its own message type. The 413,000-line web log now takes 19 seconds to sort instead of over 30 minutes. The russellmitchell results above were re-run with these fixes and did not change.
 
 **LANL Comprehensive Multi-Source Cyber-Security Events** (58 days of real logins from Los Alamos National Laboratory, with real red-team compromises; https://csr.lanl.gov/data/cyber1/). `python -m seclog.evaluate lanl auth.txt.gz redteam.txt.gz` learns where each account logs in during the first 40 hours, then alerts when an account reaches k new computers within 24 hours. 500 million login lines were read in 18 minutes.
 
@@ -218,7 +232,7 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               45 tests (python -m pytest)
+    tests/               46 tests (python -m pytest)
 
 ## Credits
 

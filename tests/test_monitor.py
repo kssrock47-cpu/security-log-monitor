@@ -198,3 +198,22 @@ def test_rules_added_after_ait_lds():
     vpn = [f"2022-01-2{d} 0{d}:00:00 192.168.230.165:4600{d} [jhall] Peer Connection Initiated with [AF_INET]192.168.230.165:4600{d}" for d in range(6)]
     assert "new_place_login" in run(vpn + ["2022-01-24 03:01:00 192.168.230.122:53581 [jhall] Peer Connection Initiated with [AF_INET]192.168.230.122:53581"])
     assert not run(vpn)
+
+
+def test_huge_web_scan_stays_fast():
+    """A scan of tens of thousands of different pages from one address (as in AIT-LDS fox) must not slow down:
+    the hidden-page rule keeps a running tally, and live message sorting masks every page path."""
+    import time
+    from datetime import datetime, timedelta
+    from seclog.parse import make_miner
+    from seclog.rules import RuleEngine
+    r, miner, t0 = RuleEngine(), make_miner(live=True), datetime(2022, 1, 18, 12)
+    start, new_alerts = time.time(), 0
+    for i in range(60000):
+        p = f"/w{i}" if i % 2 else f"/wp-content/d{i}/f"
+        ev = {"ts": t0 + timedelta(milliseconds=3 * i), "msg": f"GET {p} 404", "fmt": "web", "path": p,
+              "status": 404, "method": "GET", "ua": "Mozilla", "src_ip": "172.17.130.196"}
+        new_alerts += sum(1 for o in r.check(ev, "172.17.130.196") if not o["update"])
+        miner.add_log_message(ev["msg"])
+    assert new_alerts >= 1 and len(miner.drain.clusters) < 10
+    assert time.time() - start < 30

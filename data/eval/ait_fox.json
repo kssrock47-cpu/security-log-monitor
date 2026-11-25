@@ -1,0 +1,252 @@
+{
+  "dataset": "AIT Log Data Set V2.0, scenario fox",
+  "rules": "all rules",
+  "steps_detected": 11,
+  "steps": 12,
+  "attack_lines": 456838,
+  "attack_lines_covered": 455276,
+  "normal_lines": 219961,
+  "false_alarms": 57,
+  "false_alarms_per_1000_normal_lines": 0.259,
+  "per_step": [
+    {
+      "step": "Hidden-page scan (dirb)",
+      "label": "dirb",
+      "lines": 407351,
+      "lines_covered": 406045,
+      "line_recall": 0.997,
+      "detected": true,
+      "files": [
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-access.log.2",
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-error.log.1"
+      ]
+    },
+    {
+      "step": "WordPress scan (WPScan)",
+      "label": "wpscan",
+      "lines": 4802,
+      "lines_covered": 4764,
+      "line_recall": 0.992,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-access.log.2",
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-error.log.1"
+      ]
+    },
+    {
+      "step": "Webshell upload",
+      "label": "webshell_upload",
+      "lines": 3,
+      "lines_covered": 3,
+      "line_recall": 1.0,
+      "detected": true,
+      "files": [
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-access.log.2"
+      ]
+    },
+    {
+      "step": "Commands through the webshell",
+      "label": "webshell_cmd",
+      "lines": 23,
+      "lines_covered": 17,
+      "line_recall": 0.739,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-access.log.2"
+      ]
+    },
+    {
+      "step": "Service scan (nmap)",
+      "label": "service_scan",
+      "lines": 102,
+      "lines_covered": 12,
+      "line_recall": 0.118,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "intranet_server\\logs\\apache2\\intranet.price.fox.org-access.log.2"
+      ]
+    },
+    {
+      "step": "DNS brute-force scan",
+      "label": "dns_scan",
+      "lines": 414,
+      "lines_covered": 414,
+      "line_recall": 1.0,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log"
+      ]
+    },
+    {
+      "step": "Network scan",
+      "label": "network_scan",
+      "lines": 62,
+      "lines_covered": 38,
+      "line_recall": 0.613,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log"
+      ]
+    },
+    {
+      "step": "Attacker's VPN login",
+      "label": "attacker_vpn",
+      "lines": 28,
+      "lines_covered": 0,
+      "line_recall": 0.0,
+      "detected": false,
+      "files": [
+        "vpn\\logs\\openvpn.log"
+      ]
+    },
+    {
+      "step": "Switching to another user",
+      "label": "attacker_change_user",
+      "lines": 14,
+      "lines_covered": 6,
+      "line_recall": 0.429,
+      "detected": true,
+      "files": [
+        "intranet_server\\logs\\audit\\audit.log",
+        "intranet_server\\logs\\auth.log"
+      ]
+    },
+    {
+      "step": "Admin commands with sudo",
+      "label": "escalated_sudo_command",
+      "lines": 17,
+      "lines_covered": 5,
+      "line_recall": 0.294,
+      "detected": true,
+      "files": [
+        "intranet_server\\logs\\audit\\audit.log",
+        "intranet_server\\logs\\auth.log"
+      ]
+    },
+    {
+      "step": "Data theft over DNS (DNSteal)",
+      "label": "dnsteal",
+      "lines": 44018,
+      "lines_covered": 43968,
+      "line_recall": 0.999,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log",
+        "internal_share\\logs\\audit\\audit.log"
+      ]
+    },
+    {
+      "step": "Other attacker activity",
+      "label": "foothold",
+      "lines": 4,
+      "lines_covered": 4,
+      "line_recall": 1.0,
+      "detected": true,
+      "files": [
+        "inet-firewall\\logs\\dnsmasq.log"
+      ]
+    }
+  ],
+  "per_file": [
+    {
+      "file": "inet-firewall\\logs\\dnsmasq.log",
+      "lines": 240582,
+      "attack_lines": 44600,
+      "normal_lines": 195982,
+      "alerts": 98,
+      "alerts_on_attacks": 44,
+      "false_alarms": 54,
+      "false_alarms_per_1000_normal_lines": 0.28,
+      "false_alarm_examples": [
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)",
+        "Unusual behaviour the AI hasn't seen before (host:dnsmasq)"
+      ],
+      "seconds": 258.4
+    },
+    {
+      "file": "internal_share\\logs\\audit\\audit.log",
+      "lines": 898,
+      "attack_lines": 2,
+      "normal_lines": 896,
+      "alerts": 1,
+      "alerts_on_attacks": 0,
+      "false_alarms": 1,
+      "false_alarms_per_1000_normal_lines": 1.12,
+      "false_alarm_examples": [
+        "Unusual behaviour the AI hasn't seen before (host:systemd)"
+      ],
+      "seconds": 1.0
+    },
+    {
+      "file": "intranet_server\\logs\\apache2\\intranet.price.fox.org-access.log.2",
+      "lines": 423006,
+      "attack_lines": 410841,
+      "normal_lines": 12165,
+      "alerts": 6,
+      "alerts_on_attacks": 5,
+      "false_alarms": 1,
+      "false_alarms_per_1000_normal_lines": 0.08,
+      "false_alarm_examples": [
+        "An automated attack tool is probing the website (172.17.130.196)"
+      ],
+      "seconds": 137.6
+    },
+    {
+      "file": "intranet_server\\logs\\apache2\\intranet.price.fox.org-error.log.1",
+      "lines": 1340,
+      "attack_lines": 1336,
+      "normal_lines": 4,
+      "alerts": 0,
+      "alerts_on_attacks": 0,
+      "false_alarms": 0,
+      "false_alarms_per_1000_normal_lines": 0.0,
+      "false_alarm_examples": [],
+      "seconds": 1.0
+    },
+    {
+      "file": "intranet_server\\logs\\audit\\audit.log",
+      "lines": 2887,
+      "attack_lines": 19,
+      "normal_lines": 2868,
+      "alerts": 3,
+      "alerts_on_attacks": 2,
+      "false_alarms": 1,
+      "false_alarms_per_1000_normal_lines": 0.35,
+      "false_alarm_examples": [
+        "Unusual behaviour the AI hasn't seen before (host:systemd)"
+      ],
+      "seconds": 2.0
+    },
+    {
+      "file": "intranet_server\\logs\\auth.log",
+      "lines": 787,
+      "attack_lines": 12,
+      "normal_lines": 775,
+      "alerts": 2,
+      "alerts_on_attacks": 2,
+      "false_alarms": 0,
+      "false_alarms_per_1000_normal_lines": 0.0,
+      "false_alarm_examples": [],
+      "seconds": 1.0
+    },
+    {
+      "file": "vpn\\logs\\openvpn.log",
+      "lines": 7299,
+      "attack_lines": 28,
+      "normal_lines": 7271,
+      "alerts": 0,
+      "alerts_on_attacks": 0,
+      "false_alarms": 0,
+      "false_alarms_per_1000_normal_lines": 0.0,
+      "false_alarm_examples": [],
+      "seconds": 3.0
+    }
+  ],
+  "seconds": 471.9
+}

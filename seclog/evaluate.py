@@ -128,7 +128,9 @@ def ait(root, slack=60, baseline=False):
     import glob
     from datetime import timedelta
     from . import formats
-    name = "ait_baseline" if baseline else "ait"
+    scenario = os.path.basename(os.path.normpath(root)).replace("ait_", "")
+    # russellmitchell keeps its original result names; other scenarios get their own
+    name = ("ait" if scenario == "russellmitchell" else f"ait_{scenario}") + ("_baseline" if baseline else "")
     if baseline:  # the rules added after looking at the first run are switched off
         os.environ["SECLOG_DISABLE_RULES"] = AIT_NEW_RULES
     m = fresh_monitor(name)
@@ -209,7 +211,7 @@ def ait(root, slack=60, baseline=False):
                       "files": sorted(v["files"])})
     normal = sum(f["normal_lines"] for f in per_file)
     false = sum(f["false_alarms"] for f in per_file)
-    data = {"dataset": "AIT Log Data Set V2.0, scenario " + os.path.basename(os.path.normpath(root)),
+    data = {"dataset": "AIT Log Data Set V2.0, scenario " + scenario,
             "rules": "without the rules added after the first run" if baseline else "all rules",
             "steps_detected": sum(t["detected"] for t in table), "steps": len(table),
             "attack_lines": sum(t["lines"] for t in table), "attack_lines_covered": sum(t["lines_covered"] for t in table),
@@ -222,6 +224,34 @@ def ait(root, slack=60, baseline=False):
     print(f"False alarms: {false} over {normal:,} normal lines = {data['false_alarms_per_1000_normal_lines']} per 1,000")
     save(name, data)
     return data
+
+
+def ait_extract(zip_path, dest):
+    """Unpack only what the AIT evaluation reads from a scenario zip: the label files, and for each one the
+    log it labels plus that log's rotated older copies (x.log.1, x.log.2, ...). Saves unpacking the rest."""
+    import re as _re
+    import shutil
+    import zipfile
+    with zipfile.ZipFile(zip_path) as z:
+        names = [n for n in z.namelist() if not n.endswith("/")]
+        labels = [n for n in names if _re.search(r"(^|/)labels/", n)]
+        if not labels:
+            raise SystemExit("No labels/ folder in this zip; is it an AIT-LDS v2.0 scenario?")
+        prefix = labels[0][:_re.search(r"(^|/)labels/", labels[0]).start() + (1 if "/labels/" in labels[0] else 0)]
+        wanted = set(labels)
+        gather = prefix + "gather/"
+        for lab in labels:
+            rel = lab[len(prefix) + len("labels/"):]
+            base = _re.sub(r"\.\d+$", "", gather + rel)  # the log's own name, without a rotation number
+            wanted |= {n for n in names if n == base or _re.fullmatch(_re.escape(base) + r"\.\d+", n)}
+        size = sum(z.getinfo(n).file_size for n in wanted)
+        print(f"Unpacking {len(wanted)} of {len(names)} files ({size / 1e9:.2f} GB) into {dest}")
+        for n in sorted(wanted):
+            out = os.path.join(dest, *n[len(prefix):].split("/"))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with z.open(n) as src, open(out, "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+    return dest
 
 
 def _named(ent):
@@ -327,6 +357,9 @@ def main():
     s = sub.add_parser("ait")
     s.add_argument("root")
     s.add_argument("--baseline", action="store_true", help="switch off the rules added after the first run")
+    s = sub.add_parser("ait-extract", help="unpack only the files the AIT evaluation needs from a scenario zip")
+    s.add_argument("zip")
+    s.add_argument("dest")
     s = sub.add_parser("lanl")
     s.add_argument("auth")
     s.add_argument("redteam")
@@ -336,6 +369,8 @@ def main():
         ssh(a.path)
     elif a.cmd == "ait":
         ait(a.root, baseline=a.baseline)
+    elif a.cmd == "ait-extract":
+        ait_extract(a.zip, a.dest)
     elif a.cmd == "lanl":
         lanl(a.auth, a.redteam, a.train_hours)
 
