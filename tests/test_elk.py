@@ -79,7 +79,8 @@ def test_sends_templates_and_bulk_batches():
         st = s.status()
         assert st["connected"] and st["version"] == "8.19.26" and st["sent_events"] == 1 and st["sent_alerts"] == 1
         puts = {p for m, p, _ in FakeES.seen if m == "PUT"}
-        assert puts == {"/_index_template/seclog-events", "/_index_template/seclog-alerts"}
+        assert {"/_index_template/seclog-events", "/_index_template/seclog-alerts"} <= puts
+        assert "/seclog-alerts/_mapping" in puts  # older indices get new fields such as map locations
         bulk = next(b for m, p, b in FakeES.seen if p == "/_bulk").strip().split("\n")
         actions = [json.loads(x)["index"] for x in bulk[::2]]
         assert {"_index": "seclog-alerts", "_id": "7"} in actions  # alerts are updated in place, by id
@@ -108,3 +109,44 @@ def test_rejects_a_bad_address():
         assert False
     except ValueError:
         pass
+
+
+class FakeLogstash(BaseHTTPRequestHandler):
+    got = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        FakeLogstash.got.append(json.loads(self.rfile.read(n)))
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+
+def test_through_logstash_sends_a_json_array_with_index_and_id():
+    srv, es = _server()
+    FakeLogstash.got = []
+    ls = HTTPServer(("127.0.0.1", 0), FakeLogstash)
+    threading.Thread(target=ls.serve_forever, daemon=True).start()
+    try:
+        s = elk.Shipper(es, api_key="", via=f"http://127.0.0.1:{ls.server_address[1]}")
+        s.alert(ALERT)
+        s.event(EVENT)
+        s.wake.set()
+        for _ in range(50):
+            if s.sent["alerts"] and s.sent["events"]:
+                break
+            time.sleep(0.1)
+        st = s.status()
+        assert st["connected"] and st["via"] and st["sent_alerts"] == 1 and st["sent_events"] == 1
+        assert [] in FakeLogstash.got  # the empty batch that checks Logstash is listening
+        docs = next(b for b in FakeLogstash.got if b)
+        assert {(d["seclog_index"], d["seclog_id"]) for d in docs} == {("seclog-alerts", "7"), ("seclog-events", "12")}
+        assert not any(p == "/_bulk" for _, p, _ in FakeES.seen)  # nothing went straight to Elasticsearch
+        assert any(p == "/_index_template/seclog-events" for _, p, _ in FakeES.seen)  # but the templates did
+    finally:
+        srv.shutdown()
+        ls.shutdown()

@@ -88,6 +88,59 @@ def metric_aggs(label):
     return [{"id": "1", "enabled": True, "type": "count", "params": {"customLabel": label}, "schema": "metric"}]
 
 
+def _style(color, dynamic_size=False):
+    size = ({"type": "DYNAMIC", "options": {"minSize": 6, "maxSize": 30, "field": {"name": "doc_count", "origin": "source"},
+                                            "fieldMetaOptions": {"isEnabled": True, "sigma": 3}}}
+            if dynamic_size else {"type": "STATIC", "options": {"size": 7}})
+    return {"type": "VECTOR", "isTimeAware": True, "properties": {
+        "icon": {"type": "STATIC", "options": {"value": "marker"}},
+        "fillColor": {"type": "STATIC", "options": {"color": color}},
+        "lineColor": {"type": "STATIC", "options": {"color": "#FFFFFF"}},
+        "lineWidth": {"type": "STATIC", "options": {"size": 1}},
+        "iconSize": size, "iconOrientation": {"type": "STATIC", "options": {"orientation": 0}},
+        "labelText": {"type": "STATIC", "options": {"value": ""}},
+        "labelColor": {"type": "STATIC", "options": {"color": "#000000"}},
+        "labelSize": {"type": "STATIC", "options": {"size": 14}},
+        "labelBorderColor": {"type": "STATIC", "options": {"color": "#FFFFFF"}},
+        "symbolizeAs": {"options": {"value": "circle"}}, "labelBorderSize": {"options": {"size": "SMALL"}},
+        "labelZoomRange": {"options": {"useLayerZoomRange": True, "minZoom": 0, "maxZoom": 24}},
+        "labelPosition": {"options": {"position": "CENTER"}}}}
+
+
+def attack_map():
+    """Kibana Maps: failed logins as sized clusters, threats as points. Needs the locations Logstash adds."""
+    layers = [
+        {"id": "basemap", "type": "EMS_VECTOR_TILE", "label": None, "minZoom": 0, "maxZoom": 24, "alpha": 1,
+         "visible": True, "style": {"type": "EMS_VECTOR_TILE"},
+         "sourceDescriptor": {"type": "EMS_TMS", "isAutoSelect": True, "lightModeDefault": "road_map_desaturated"}},
+        {"id": "fails", "type": "GEOJSON_VECTOR", "label": "Failed logins", "minZoom": 0, "maxZoom": 24, "alpha": 0.7,
+         "visible": True, "joins": [], "style": _style("#D6BF57", dynamic_size=True),
+         "query": {"query": "event.outcome:failure", "language": "kuery"},
+         "sourceDescriptor": {"id": "fails-src", "type": "ES_GEO_GRID", "geoField": "source.geo.location",
+                              "requestType": "point", "resolution": "COARSE", "metrics": [{"type": "count"}],
+                              "applyGlobalQuery": True, "applyGlobalTime": True,
+                              "indexPatternRefName": "layer_1_source_index_pattern"}},
+        {"id": "threats", "type": "GEOJSON_VECTOR", "label": "Threats", "minZoom": 0, "maxZoom": 24, "alpha": 0.9,
+         "visible": True, "joins": [], "style": _style("#BD271E"),
+         "sourceDescriptor": {"id": "threats-src", "type": "ES_SEARCH", "geoField": "source.geo.location",
+                              "scalingType": "LIMIT", "filterByMapBounds": True, "sortField": "", "sortOrder": "desc",
+                              "tooltipProperties": ["rule.name", "labels.severity", "source.ip",
+                                                    "source.geo.city_name", "source.geo.country_name"],
+                              "topHitsSplitField": "", "topHitsSize": 1, "applyGlobalQuery": True,
+                              "applyGlobalTime": True, "indexPatternRefName": "layer_2_source_index_pattern"}},
+    ]
+    state = {"zoom": 1.3, "center": {"lon": 40, "lat": 25}, "timeFilters": {"from": "now-24h", "to": "now"},
+             "refreshConfig": {"isPaused": False, "interval": 10000}, "query": {"query": "", "language": "kuery"},
+             "filters": [], "settings": {"autoFitToDataBounds": False, "initialLocation": "LAST_SAVED_LOCATION",
+                                         "showScaleControl": False, "showSpatialFilters": True}}
+    return {"type": "map", "id": "seclog-map", "attributes": {
+        "title": "Where attacks come from", "description": "Needs Logstash for the locations (see ELK.md)",
+        "mapStateJSON": json.dumps(state), "layerListJSON": json.dumps(layers),
+        "uiStateJSON": json.dumps({"isLayerTOCOpen": True, "openTOCDetails": []})},
+        "references": [{"name": "layer_1_source_index_pattern", "type": "index-pattern", "id": EV},
+                       {"name": "layer_2_source_index_pattern", "type": "index-pattern", "id": AL}]}
+
+
 def build():
     objs = [
         {"type": "index-pattern", "id": EV, "attributes": {"title": EV + "*", "name": "Security Log Monitor: log events",
@@ -137,11 +190,12 @@ def build():
         ("seclog-intro", "visualization", 0, 0, 18, 8), ("seclog-n-alerts", "visualization", 18, 0, 10, 8),
         ("seclog-n-events", "visualization", 28, 0, 10, 8), ("seclog-n-fails", "visualization", 38, 0, 10, 8),
         ("seclog-alerts-time", "visualization", 0, 8, 24, 13), ("seclog-events-time", "visualization", 24, 8, 24, 13),
-        ("seclog-tactics", "visualization", 0, 21, 16, 14), ("seclog-ai-vs-rules", "visualization", 16, 21, 14, 14),
-        ("seclog-countries", "visualization", 30, 21, 18, 14),
-        ("seclog-attackers", "visualization", 0, 35, 16, 15), ("seclog-techniques", "visualization", 16, 35, 18, 15),
-        ("seclog-users", "visualization", 34, 35, 14, 15),
-        ("seclog-latest-alerts", "search", 0, 50, 48, 16),
+        ("seclog-map", "map", 0, 21, 48, 20),
+        ("seclog-tactics", "visualization", 0, 41, 16, 14), ("seclog-ai-vs-rules", "visualization", 16, 41, 14, 14),
+        ("seclog-countries", "visualization", 30, 41, 18, 14),
+        ("seclog-attackers", "visualization", 0, 55, 16, 15), ("seclog-techniques", "visualization", 16, 55, 18, 15),
+        ("seclog-users", "visualization", 34, 55, 14, 15),
+        ("seclog-latest-alerts", "search", 0, 70, 48, 16),
     ]
     panels, refs = [], []
     for i, (oid, otype, x, y, w, h) in enumerate(layout, 1):
@@ -158,7 +212,7 @@ def build():
         "refreshInterval": {"pause": False, "value": 10000},
         "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []})}},
         "references": refs}
-    return objs + v + [search, dash]
+    return objs + v + [search, attack_map(), dash]
 
 
 if __name__ == "__main__":

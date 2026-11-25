@@ -1,13 +1,14 @@
-# Downloads Elasticsearch and Kibana (the E and K of the ELK Stack) from elastic.co, checks them, and sets them up
+# Downloads Elasticsearch, Logstash and Kibana (the ELK Stack) from elastic.co, checks them, and sets them up
 # for this monitor on this PC only. Nothing is installed system-wide and no administrator rights are needed.
 #   powershell -ExecutionPolicy Bypass -File elk\setup-windows.ps1
-# About 1 GB to download. Afterwards start them with elk\start-windows.ps1.
-param([string]$Version = "8.19.26", [string]$Dir = "$env:USERPROFILE\elk")
+# About 1.4 GB to download (add -NoLogstash to skip Logstash, about 0.4 GB). Then run elk\start-windows.ps1.
+param([string]$Version = "8.19.26", [string]$Dir = "$env:USERPROFILE\elk", [switch]$NoLogstash)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 New-Item -ItemType Directory -Force $Dir | Out-Null
 
-foreach ($p in "elasticsearch", "kibana") {
+$products = @("elasticsearch", "kibana") + $(if ($NoLogstash) { @() } else { @("logstash") })
+foreach ($p in $products) {
     $folder = Join-Path $Dir "$p-$Version"
     if (Test-Path (Join-Path $folder "bin")) { Write-Host "$p $Version is already there."; continue }
     $name = "$p-$Version-windows-x86_64.zip"
@@ -70,5 +71,5 @@ telemetry.optIn: false
 "@
 }
 Write-Host ""
-Write-Host "Done. Elasticsearch and Kibana $Version are in $Dir"
+Write-Host "Done. $($products -join ', ') $Version are in $Dir"
 Write-Host "Start them with:  powershell -ExecutionPolicy Bypass -File elk\start-windows.ps1"

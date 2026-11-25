@@ -569,6 +569,7 @@
   }
 
   /* ELK Stack: send events and alerts to Elasticsearch, look at them in Kibana */
+  let lsWanted = false;  // "Go through Logstash" ticked while sending is off
   async function renderElastic(msg) {
     const box = $("#elkPanel"); if (!box) return;
     const r = await api("/api/m/elastic").catch(() => null);
@@ -583,13 +584,28 @@
         <input id="elkUrl" class="elk-url" type="url" value="${esc(r.url || "http://127.0.0.1:9200")}" aria-label="Elasticsearch address" ${r.on ? "disabled" : ""}>
         ${r.on ? `<span class="fw-state ${r.connected ? "ok" : ""}">${state}</span>` : ""}
       </div>
+      <div class="fw-row" style="margin-top:10px">
+        <label class="toggle"><input type="checkbox" id="lsToggle" ${(r.on ? r.via : lsWanted) ? "checked" : ""}> <span>Go through Logstash</span></label>
+        <input id="lsUrl" class="elk-url" type="url" value="${esc(r.via || "http://127.0.0.1:5080")}" aria-label="Logstash address" ${(r.on ? r.via : lsWanted) ? "disabled" : ""}>
+        <span class="muted small">Logstash adds the city and map location of each outside address, for the map in Kibana.</span>
+      </div>
       ${r.on && r.connected ? `<p style="margin:12px 0 0"><a class="btn small" href="${esc(r.kibana + r.dashboard)}" target="_blank" rel="noopener">Open the Kibana dashboard</a>
         <span class="muted small" style="margin-left:8px">Indices ${r.indices.map(esc).join(" and ")}${r.dropped ? `. ${fmt(r.dropped)} older lines were dropped while it was unreachable` : ""}.</span></p>` : ""}
       <p class="muted small" style="margin:10px 0 0">${r.on ? "Counts are since the monitor started. Each time you switch it on, it first sends every threat so far and the latest 20,000 log lines; resending updates them rather than making copies." : "Not set up yet? Run <code>elk\\setup-windows.ps1</code> once, then <code>elk\\start-windows.ps1</code>. See ELK.md."}</p>
       ${msg ? `<div class="fw-test bad">${esc(msg)}</div>` : ""}`;
+    const via = () => ($("#lsToggle").checked ? $("#lsUrl").value : null);
+    $("#lsToggle").addEventListener("change", async (e) => {
+      if (!r.on) { lsWanted = e.target.checked; $("#lsUrl").disabled = lsWanted; return; }  // used when sending is switched on
+      try {
+        await post("/api/m/elastic", { url: r.url, via: via() });
+        note(e.target.checked ? "Going through Logstash" : "Sending straight to Elasticsearch",
+          e.target.checked ? "New threats and log lines get map locations." : "Logstash is no longer used.");
+        renderElastic();
+      } catch (err) { renderElastic(err.message); }
+    });
     $("#elkToggle").addEventListener("change", async (e) => {
       try {
-        await post("/api/m/elastic", { url: e.target.checked ? $("#elkUrl").value : null });
+        await post("/api/m/elastic", { url: e.target.checked ? $("#elkUrl").value : null, via: e.target.checked ? via() : null });
         note(e.target.checked ? "Sending to Elasticsearch" : "Stopped sending to Elasticsearch",
           e.target.checked ? "Threats and log lines will appear in Kibana within a few seconds." : "Nothing more will be sent.");
         renderElastic();

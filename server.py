@@ -642,6 +642,7 @@ def m_response_set(r: FirewallReq):
 
 class ElasticReq(BaseModel):
     url: str | None = None
+    via: str | None = None  # Logstash HTTP input, or None for straight to Elasticsearch
 
 
 @app.get("/api/m/elastic")
@@ -652,7 +653,7 @@ def m_elastic():
 @app.post("/api/m/elastic")
 def m_elastic_set(r: ElasticReq):
     try:
-        return MON.set_elastic(r.url)
+        return MON.set_elastic(r.url, r.via)
     except ValueError as e:
         raise HTTPException(400, str(e))
 

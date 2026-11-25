@@ -29,7 +29,7 @@ It takes security logs from anywhere, watches them live or checks them offline, 
 * **Attack map:** a world map of where activity comes from, with lines from attackers to your systems. The country lookup is offline (geoip2fast, built from MaxMind GeoLite2 data), so it works without internet.
 * **Risk score and profiles:** every address and user gets a risk score from 0 to 100. Recent threats count most and fade with a 30-minute half-life; threats marked real count more, false alarms count nothing. Click any address for its profile: country, risk trend, accounts used, activity, threats and log lines.
 * **Respond:** block an address for 30 minutes. In the attack lab the lab firewall really drops its traffic. For real addresses, switch on **Block with the Windows Firewall** on the Connect logs page (off by default; needs `run.bat` started with "Run as administrator"). Each block then adds an inbound Windows Firewall rule named `SecurityLogMonitor block <address>`, removed automatically when the block ends, when you unblock, when you switch the option off, or at the next start if one was left behind. **Test it safely** adds and removes a rule for 203.0.113.50, an address reserved for examples. Addresses inside your own network are on an allowlist and are never blocked. Without the option, blocks are simulated.
-* **ELK Stack:** switch on **Send to Elasticsearch** on the Connect logs page and every log line and threat is copied to Elasticsearch, using Elastic Common Schema field names (`source.ip`, `user.name`, `event.outcome`, `rule.name`, `threat.technique.id`, ...). A ready-made Kibana dashboard shows threats over time, MITRE ATT&CK tactics, top attackers, targeted accounts and failed logins by country. The same data can feed a SOC's own SIEM. Setup scripts download and start Elasticsearch and Kibana on Windows without administrator rights; see [ELK.md](ELK.md).
+* **ELK Stack:** switch on **Send to Elasticsearch** on the Connect logs page and every log line and threat is copied to Elasticsearch, using Elastic Common Schema field names (`source.ip`, `user.name`, `event.outcome`, `rule.name`, `threat.technique.id`, ...). Optionally it goes through a Logstash pipeline that adds the city and map location of each outside address. A ready-made Kibana dashboard shows threats over time, a map of where attacks come from, MITRE ATT&CK tactics, top attackers, targeted accounts and failed logins by country. The same data can feed a SOC's own SIEM. Setup scripts download and start Elasticsearch, Logstash and Kibana on Windows without administrator rights; see [ELK.md](ELK.md).
 * **Incident report:** one click makes a PDF of any threat: what happened, the attack story, the evidence and the response.
 * **Presentation mode:** a full-screen view for a projector, with the map, the radar, live threats and the riskiest addresses. Press M to switch view, Esc to leave.
 * **Guided demo:** a 23-step tour that explains every screen and runs the whole story live (about 6 minutes). Tick "Start fresh" to clear old threats and lessons first.
@@ -208,14 +208,14 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
     seclog/report.py     PDF incident reports (fonts in seclog/fonts)
     seclog/firewall.py   optional real blocking with the Windows Firewall
     seclog/elk.py        sends events and alerts to Elasticsearch (ELK Stack, ECS fields)
-    elk/                 Elasticsearch and Kibana setup, start and stop scripts, Kibana dashboard (see ELK.md)
+    elk/                 ELK Stack setup, start and stop scripts, Logstash pipeline, Kibana dashboard (see ELK.md)
     seclog/snapshot.py   portable copy of the HDFS_v1 results (data/research)
     run.bat, run.sh      launchers for Windows, and for Mac and Linux
     web/monitor.js       live monitor screens
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               41 tests (python -m pytest)
+    tests/               42 tests (python -m pytest)
 
 ## Credits
 

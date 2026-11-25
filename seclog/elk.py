@@ -10,6 +10,9 @@
   If it is unreachable the monitor keeps working; up to MAX_QUEUE documents wait and the oldest are dropped
   beyond that (the count is shown).
 * For a secured cluster set SECLOG_ELASTIC_API_KEY (an Elasticsearch API key, sent as "ApiKey <key>").
+* Optionally through Logstash (the L of ELK): documents go to Logstash's HTTP input instead, and the pipeline
+  in elk/logstash/seclog.conf adds map locations (city, coordinates) from its GeoIP database before storing
+  them in Elasticsearch. The monitor still talks to Elasticsearch itself for the index templates and status.
 """
 import ipaddress
 import json
@@ -32,7 +35,9 @@ SEV_NUM = {"low": 21, "medium": 47, "high": 73, "critical": 99}  # the 0-100 sca
 OUTCOME = {"fail": "failure", "success": "success"}
 KIND = {"ai": "AI (Isolation Forest)", "pattern": "Known attack pattern"}
 
-GEO = {"properties": {"country_iso_code": {"type": "keyword"}, "country_name": {"type": "keyword"}}}
+GEO = {"properties": {"country_iso_code": {"type": "keyword"}, "country_name": {"type": "keyword"},
+                      "city_name": {"type": "keyword"}, "region_name": {"type": "keyword"},
+                      "continent_name": {"type": "keyword"}, "location": {"type": "geo_point"}}}
 KW = {"type": "keyword"}
 TEMPLATES = {
     EVENTS: {"index_patterns": [EVENTS + "*"], "priority": 200, "template": {
@@ -132,9 +137,14 @@ def alert_doc(a):
                    "connection": str(a.get("source_id")), "count": a.get("count")}})
 
 
+class LogstashDown(Exception):
+    pass
+
+
 class Shipper:
-    def __init__(self, url=None, api_key=None):
+    def __init__(self, url=None, api_key=None, via=None):
         self.url = None
+        self.via = None  # Logstash HTTP input, or None to send straight to Elasticsearch
         self.api_key = api_key if api_key is not None else os.environ.get("SECLOG_ELASTIC_API_KEY") or None
         self.q = deque()
         self.lock = threading.Lock()
@@ -145,20 +155,22 @@ class Shipper:
         self.version = None
         self.last_error = None
         self.last_ok = None
-        self.configure(url)
+        self.configure(url, via)
         threading.Thread(target=self._loop, daemon=True).start()
 
     # ------------------------------------------------------------ settings
-    def configure(self, url):
+    def configure(self, url, via=None):
         url = (url or "").strip().rstrip("/") or None
-        if url:
-            p = urllib.parse.urlparse(url)
-            if p.scheme not in ("http", "https") or not p.netloc:
-                raise ValueError("Use a web address such as http://127.0.0.1:9200")
+        via = (via or "").strip().rstrip("/") or None
+        for u, eg in ((url, "http://127.0.0.1:9200"), (via, "http://127.0.0.1:5080")):
+            if u:
+                p = urllib.parse.urlparse(u)
+                if p.scheme not in ("http", "https") or not p.netloc:
+                    raise ValueError(f"Use a web address such as {eg}")
         with self.lock:
-            if url != self.url:
+            if url != self.url or via != self.via:
                 self.ready, self.version, self.last_error = False, None, None
-            self.url = url
+            self.url, self.via = url, (via if url else None)
             if not url:
                 self.q.clear()
         self.wake.set()
@@ -168,7 +180,7 @@ class Shipper:
         return bool(self.url)
 
     def status(self):
-        return {"on": self.on, "url": self.url, "connected": self.ready and self.last_error is None,
+        return {"on": self.on, "url": self.url, "via": self.via, "connected": self.ready and self.last_error is None,
                 "version": self.version, "sent_events": self.sent["events"], "sent_alerts": self.sent["alerts"],
                 "waiting": len(self.q), "dropped": self.dropped, "error": self.last_error,
                 "last_ok": self.last_ok, "indices": [EVENTS, ALERTS], "api_key": bool(self.api_key)}
@@ -195,8 +207,8 @@ class Shipper:
             self._put(ALERTS, alert_doc(a), _id=str(a["id"]))
 
     # ------------------------------------------------------------ HTTP
-    def _req(self, method, path, body=None, ctype="application/json", timeout=15):
-        url = self.url + path
+    def _req(self, method, path, body=None, ctype="application/json", timeout=15, base=None):
+        url = (base or self.url) + path
         data = body.encode() if isinstance(body, str) else body
         req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": ctype})
         if self.api_key:
@@ -204,7 +216,11 @@ class Shipper:
         host = urllib.parse.urlparse(url).hostname or ""
         handlers = [urllib.request.ProxyHandler({})] if host in ("127.0.0.1", "localhost", "::1") else []
         with urllib.request.build_opener(*handlers).open(req, timeout=timeout) as r:
-            return json.loads(r.read() or b"{}")
+            raw = r.read() or b"{}"
+            try:
+                return json.loads(raw)
+            except ValueError:  # Logstash answers "ok"
+                return {"text": raw.decode("utf-8", "replace")[:200]}
 
     @staticmethod
     def _why(e):
@@ -219,6 +235,8 @@ class Shipper:
             return f"Elasticsearch answered {e.code}{': ' + str(detail)[:160] if detail else ''}"
         if isinstance(e, urllib.error.URLError):
             return "Can't reach Elasticsearch at this address. Is it running? (elk\\start-windows.ps1 starts it.)"
+        if isinstance(e, LogstashDown):
+            return str(e)
         return str(e)[:200]
 
     def check(self):
@@ -226,11 +244,30 @@ class Shipper:
         info = self._req("GET", "/")
         for name, body in TEMPLATES.items():
             self._req("PUT", f"/_index_template/{name}", json.dumps(body))
+            try:  # indices made by an older version get the new fields (such as map locations) too
+                self._req("PUT", f"/{name}/_mapping", json.dumps({"properties": body["template"]["mappings"]["properties"]}))
+            except urllib.error.HTTPError:
+                pass  # the index doesn't exist yet
         self.version = (info.get("version") or {}).get("number")
+        if self.via:
+            try:
+                self._req("POST", "", "[]", base=self.via)  # an empty batch: checks the pipeline is listening
+            except Exception:
+                raise LogstashDown(f"Elasticsearch is fine, but Logstash isn't answering at {self.via}. "
+                                   "Is it running? (elk\\start-windows.ps1 starts it.)")
         self.ready, self.last_error = True, None
         return self.status()
 
     def _send(self, batch):
+        if self.via:  # Logstash: one JSON array; the pipeline reads where each document goes from these two fields
+            docs = [{**doc, "seclog_index": index, "seclog_id": _id} for index, _id, doc in batch]
+            try:
+                self._req("POST", "", json.dumps(docs, default=str), timeout=60, base=self.via)
+            except Exception as e:
+                raise LogstashDown(f"Logstash at {self.via} didn't take the documents ({str(e)[:120]}). Is it running?")
+            for index, _, _ in batch:
+                self.sent["alerts" if index == ALERTS else "events"] += 1
+            return 0
         lines = []
         for index, _id, doc in batch:
             lines.append(json.dumps({"index": {"_index": index, **({"_id": _id} if _id else {})}}))

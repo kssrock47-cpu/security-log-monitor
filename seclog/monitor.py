@@ -120,7 +120,8 @@ class Monitor:
         row = self.con.execute("select value from memory where key='settings'").fetchone()
         self.settings = {"real_firewall": False, **(json.loads(row[0]) if row else {})}
         # ELK Stack: send events and alerts to Elasticsearch when switched on (or SECLOG_ELASTIC is set)
-        self.elastic = elk.Shipper(self.settings.get("elastic_url") or os.environ.get("SECLOG_ELASTIC"))
+        self.elastic = elk.Shipper(self.settings.get("elastic_url") or os.environ.get("SECLOG_ELASTIC"),
+                                   via=self.settings.get("logstash_url") or os.environ.get("SECLOG_LOGSTASH"))
         self._last_expiry = 0
         threading.Thread(target=self._firewall_tidy, daemon=True).start()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -875,10 +876,11 @@ class Monitor:
         return {**self.elastic.status(), "kibana": os.environ.get("SECLOG_KIBANA", "http://127.0.0.1:5601"),
                 "dashboard": "/app/dashboards#/view/seclog-overview"}
 
-    def set_elastic(self, url, backfill_events=20000):
-        """Switch sending on (url) or off (None). On: also sends every alert so far and the latest log lines."""
-        self.elastic.configure(url)
-        self.settings["elastic_url"] = self.elastic.url
+    def set_elastic(self, url, via=None, backfill_events=20000):
+        """Switch sending on (url) or off (None), straight to Elasticsearch or through Logstash (via).
+        On: also sends every alert so far and the latest log lines."""
+        self.elastic.configure(url, via)
+        self.settings["elastic_url"], self.settings["logstash_url"] = self.elastic.url, self.elastic.via
         self._exec("insert or replace into memory values ('settings', ?)", (json.dumps(self.settings),))
         if self.elastic.on:
             self._flush_events()
