@@ -14,7 +14,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
-from . import elk, firewall, formats, insight
+from . import elk, firewall, formats, insight, sqlstore
 from .ai import WindowAI
 from .learning import Learner
 from .parse import make_miner
@@ -122,6 +122,8 @@ class Monitor:
         # ELK Stack: send events and alerts to Elasticsearch when switched on (or SECLOG_ELASTIC is set)
         self.elastic = elk.Shipper(self.settings.get("elastic_url") or os.environ.get("SECLOG_ELASTIC"),
                                    via=self.settings.get("logstash_url") or os.environ.get("SECLOG_LOGSTASH"))
+        # MySQL: a copy of events and alerts for SQL reporting, when switched on (or SECLOG_MYSQL is set)
+        self.mysql = sqlstore.Store(self.settings.get("mysql_url") or os.environ.get("SECLOG_MYSQL"))
         self._last_expiry = 0
         threading.Thread(target=self._firewall_tidy, daemon=True).start()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -455,6 +457,9 @@ class Monitor:
         if self.elastic.on:
             for row in buf:
                 self.elastic.event(row)
+        if self.mysql.on:
+            for row in buf:
+                self.mysql.event(row, self._src_name(row[2]))
 
     # ---------------------------------------------------------------- read side
     def rate(self):
@@ -867,10 +872,46 @@ class Monitor:
             return dict(zip([c[0] for c in cur.description], row)) if row else None
 
     def _ship_alert(self, aid):
-        if self.elastic.on:
+        if self.elastic.on or self.mysql.on:
             a = self._alert_row(aid)
-            if a:
+            if a and self.elastic.on:
                 self.elastic.alert(a)
+            if a and self.mysql.on:
+                self.mysql.alert(a, self._src_name(a.get("source_id")))
+
+    def _src_name(self, sid):
+        s = self.sources.get(sid)
+        if s:
+            return s.name
+        row = self._rows("select name from sources where id=?", (sid,))
+        return row[0][0] if row else None
+
+    # ---------------------------------------------------------------- MySQL
+    def mysql_view(self):
+        return self.mysql.status()
+
+    def set_mysql(self, url, backfill_events=20000):
+        """Switch the MySQL copy on (url) or off (None). On: also copies every alert so far and the latest log lines."""
+        self.mysql.configure(url)
+        self.settings["mysql_url"] = self.mysql.url
+        self._exec("insert or replace into memory values ('settings', ?)", (json.dumps(self.settings),))
+        if self.mysql.on:
+            self._flush_events()
+            for r in self._rows("select * from (select * from events order by id desc limit ?) order by id", (backfill_events,)):
+                self.mysql.event(r, self._src_name(r[2]))
+            with self.dbl:
+                cur = self.con.execute("select * from alerts order by id")
+                cols = [c[0] for c in cur.description]
+                alerts = [dict(zip(cols, r)) for r in cur.fetchall()]
+            for a in alerts:
+                self.mysql.alert(a, self._src_name(a.get("source_id")))
+        return self.mysql_view()
+
+    def mysql_report(self):
+        try:
+            return {"ok": True, "reports": self.mysql.report()}
+        except Exception as e:
+            return {"ok": False, "error": self.mysql._why(e), "reports": {}}
 
     def elastic_view(self):
         return {**self.elastic.status(), "kibana": os.environ.get("SECLOG_KIBANA", "http://127.0.0.1:5601"),

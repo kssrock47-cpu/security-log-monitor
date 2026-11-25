@@ -468,3 +468,10 @@ body.present .shell { background: none; }
 .fw-test ul { margin: 6px 0 0; padding-left: 18px; list-style: none; }
 .elk-url { font: inherit; font-size: 14.5px; padding: 6px 10px; border: 1.5px solid var(--line, #cfd7e1); border-radius: 10px; min-width: 240px; color: var(--ink); background: var(--paper, #fff); }
 .elk-url:disabled { background: var(--mist); color: var(--body); }
+.sql-reports { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; margin-top: 16px; }
+.sql-report { overflow-x: auto; }
+.sql-report h4 { margin: 0 0 6px; font-size: 15px; }
+.sql-table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.sql-table th { text-align: left; font-weight: 600; color: var(--ink-2, #44546a); border-bottom: 1.5px solid var(--line, #cfd7e1); padding: 4px 6px; }
+.sql-table td { border-bottom: 1px solid var(--line, #e3e8ee); padding: 4px 6px; white-space: nowrap; }
+.sql-report code { display: block; white-space: pre-wrap; margin-top: 4px; }

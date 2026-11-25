@@ -514,10 +514,12 @@
     <h2>Your connections</h2>
     <div class="conns" id="conns" style="margin-top:14px"></div>
     <section class="panel resp-panel" id="respPanel" style="margin-top:30px"></section>
-    <section class="panel resp-panel" id="elkPanel" style="margin-top:20px"></section>`;
+    <section class="panel resp-panel" id="elkPanel" style="margin-top:20px"></section>
+    <section class="panel resp-panel" id="sqlPanel" style="margin-top:20px"></section>`;
     wireTiles(view);
     renderResponse();
     every(() => { if (!$("#elkUrl") || document.activeElement !== $("#elkUrl")) renderElastic(); }, 3000);
+    every(() => { if (!$("#sqlUrl") || document.activeElement !== $("#sqlUrl")) renderMysql(); }, 5000);
     $$("[data-sample]").forEach((b) => b.addEventListener("click", async () => {
       b.disabled = true;
       await post(`/api/m/sample/${b.dataset.sample}`);
@@ -610,6 +612,43 @@
           e.target.checked ? "Threats and log lines will appear in Kibana within a few seconds." : "Nothing more will be sent.");
         renderElastic();
       } catch (err) { renderElastic(err.message); }
+    });
+  }
+
+  /* MySQL: a copy of events and alerts for SQL reporting */
+  async function renderMysql(msg) {
+    const box = $("#sqlPanel"); if (!box) return;
+    const r = await api("/api/m/mysql").catch(() => null);
+    if (!r || !$("#sqlPanel")) return;
+    const rep = r.on && r.connected ? await api("/api/m/mysql/report").catch(() => null) : null;
+    if (!$("#sqlPanel")) return;
+    const state = !r.on ? "" : r.connected ? `Connected to MySQL ${esc(r.version || "")}, database ${esc(r.database)}. Copied ${fmt(r.sent_events)} log lines and ${fmt(r.sent_alerts)} threats${r.waiting ? `, ${fmt(r.waiting)} waiting` : ""}.`
+      : esc(r.error || "Connecting…");
+    const table = (title, t) => `<div class="sql-report"><h4>${esc(title)}</h4>
+      ${t.rows.length ? `<table class="sql-table"><thead><tr>${t.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${t.rows.map((row) => `<tr>${row.map((v) => `<td>${esc(v == null ? "" : String(v))}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+        : `<p class="muted small">Nothing yet.</p>`}
+      <details class="tech-only"><summary class="small">SQL</summary><code class="small">${esc(t.sql)}</code></details></div>`;
+    box.innerHTML = `
+      <h3>Keep a copy in MySQL ${techChip("SQL, InnoDB, views")}</h3>
+      <p class="muted" style="margin:6px 0 14px">Copies every log line and threat into a MySQL database with proper tables, keys and views, so they can be queried with SQL or read by other tools. The monitor's own store stays a single SQLite file.</p>
+      <div class="fw-row">
+        <label class="toggle"><input type="checkbox" id="sqlToggle" ${r.on ? "checked" : ""}> <span>Keep a copy in MySQL</span></label>
+        <input id="sqlUrl" class="elk-url" type="text" value="${esc(r.url || "mysql://root@127.0.0.1:3306/seclog")}" aria-label="MySQL address" ${r.on ? "disabled" : ""}>
+        ${r.on ? `<span class="fw-state ${r.connected ? "ok" : ""}">${state}</span>` : ""}
+      </div>
+      ${rep && rep.ok ? `<div class="sql-reports">${Object.entries(rep.reports).map(([k, t]) => table(k, t)).join("")}</div>
+        <p class="muted small" style="margin:10px 0 0">Straight from the MySQL views v_top_attackers, v_accounts_under_attack and v_threats_by_tactic.</p>` : ""}
+      ${rep && !rep.ok ? `<div class="fw-test bad">${esc(rep.error)}</div>` : ""}
+      <p class="muted small" style="margin:10px 0 0">${r.on ? "Each time you switch it on, it first copies every threat so far and the latest 20,000 log lines; copying again updates rows rather than duplicating them." : "Not set up yet? Run <code>mysql\\setup-windows.ps1</code> once, then <code>mysql\\start-windows.ps1</code>. See MYSQL.md."}</p>
+      ${msg ? `<div class="fw-test bad">${esc(msg)}</div>` : ""}`;
+    $("#sqlToggle").addEventListener("change", async (e) => {
+      try {
+        await post("/api/m/mysql", { url: e.target.checked ? $("#sqlUrl").value : null });
+        note(e.target.checked ? "Copying to MySQL" : "Stopped copying to MySQL",
+          e.target.checked ? "Threats and log lines will appear in the database within a few seconds." : "Nothing more will be copied.");
+        renderMysql();
+      } catch (err) { renderMysql(err.message); }
     });
   }
 

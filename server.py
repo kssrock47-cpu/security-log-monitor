@@ -640,6 +640,28 @@ def m_response_set(r: FirewallReq):
         raise HTTPException(403, str(e))
 
 
+class MysqlReq(BaseModel):
+    url: str | None = None
+
+
+@app.get("/api/m/mysql")
+def m_mysql():
+    return MON.mysql_view()
+
+
+@app.post("/api/m/mysql")
+def m_mysql_set(r: MysqlReq):
+    try:
+        return MON.set_mysql(r.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/m/mysql/report")
+def m_mysql_report():
+    return MON.mysql_report()
+
+
 class ElasticReq(BaseModel):
     url: str | None = None
     via: str | None = None  # Logstash HTTP input, or None for straight to Elasticsearch
