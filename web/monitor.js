@@ -574,7 +574,7 @@
     const box = $("#elkPanel"); if (!box) return;
     const r = await api("/api/m/elastic").catch(() => null);
     if (!r || !$("#elkPanel")) return;
-    const state = !r.on ? "" : r.connected ? `Connected to Elasticsearch ${esc(r.version || "")}. Sent ${fmt(r.sent_events)} log lines and ${fmt(r.sent_alerts)} threats${r.waiting ? `, ${fmt(r.waiting)} waiting` : ""}.`
+    const state = !r.on ? "" : r.connected ? `Connected to Elasticsearch ${esc(r.version || "")}${r.via ? ", through Logstash" : ""}. Sent ${fmt(r.sent_events)} log lines and ${fmt(r.sent_alerts)} threats${r.waiting ? `, ${fmt(r.waiting)} waiting` : ""}.`
       : esc(r.error || "Connecting…");
     box.innerHTML = `
       <h3>Send to Elasticsearch and Kibana ${techChip("ELK Stack, Elastic Common Schema")}</h3>
