@@ -466,3 +466,5 @@ body.present .shell { background: none; }
 .fw-test { margin-top: 12px; padding: 10px 14px; border-radius: 12px; background: var(--moss-soft); color: #1f5d40; font-size: 14.5px; }
 .fw-test.bad { background: var(--flare-soft); color: #6d1c11; }
 .fw-test ul { margin: 6px 0 0; padding-left: 18px; list-style: none; }
+.elk-url { font: inherit; font-size: 14.5px; padding: 6px 10px; border: 1.5px solid var(--line, #cfd7e1); border-radius: 10px; min-width: 240px; color: var(--ink); background: var(--paper, #fff); }
+.elk-url:disabled { background: var(--mist); color: var(--body); }

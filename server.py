@@ -640,6 +640,31 @@ def m_response_set(r: FirewallReq):
         raise HTTPException(403, str(e))
 
 
+class ElasticReq(BaseModel):
+    url: str | None = None
+
+
+@app.get("/api/m/elastic")
+def m_elastic():
+    return MON.elastic_view()
+
+
+@app.post("/api/m/elastic")
+def m_elastic_set(r: ElasticReq):
+    try:
+        return MON.set_elastic(r.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/m/elastic/test")
+def m_elastic_test():
+    try:
+        return MON.elastic_test()
+    except (ValueError, ConnectionError) as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/m/response/test")
 def m_response_test():
     try:

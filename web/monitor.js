@@ -513,9 +513,11 @@
       <button class="btn small ghost" data-sample="apache">Apache web server (mostly harmless)</button></p>
     <h2>Your connections</h2>
     <div class="conns" id="conns" style="margin-top:14px"></div>
-    <section class="panel resp-panel" id="respPanel" style="margin-top:30px"></section>`;
+    <section class="panel resp-panel" id="respPanel" style="margin-top:30px"></section>
+    <section class="panel resp-panel" id="elkPanel" style="margin-top:20px"></section>`;
     wireTiles(view);
     renderResponse();
+    every(() => { if (!$("#elkUrl") || document.activeElement !== $("#elkUrl")) renderElastic(); }, 3000);
     $$("[data-sample]").forEach((b) => b.addEventListener("click", async () => {
       b.disabled = true;
       await post(`/api/m/sample/${b.dataset.sample}`);
@@ -564,6 +566,35 @@
       renderResponse(html);
     });
     $$("[data-unb]", box).forEach((b) => b.addEventListener("click", async () => { await post("/api/m/unblock", { entity: b.dataset.unb }); renderResponse(); }));
+  }
+
+  /* ELK Stack: send events and alerts to Elasticsearch, look at them in Kibana */
+  async function renderElastic(msg) {
+    const box = $("#elkPanel"); if (!box) return;
+    const r = await api("/api/m/elastic").catch(() => null);
+    if (!r || !$("#elkPanel")) return;
+    const state = !r.on ? "" : r.connected ? `Connected to Elasticsearch ${esc(r.version || "")}. Sent ${fmt(r.sent_events)} log lines and ${fmt(r.sent_alerts)} threats${r.waiting ? `, ${fmt(r.waiting)} waiting` : ""}.`
+      : esc(r.error || "Connecting…");
+    box.innerHTML = `
+      <h3>Send to Elasticsearch and Kibana ${techChip("ELK Stack, Elastic Common Schema")}</h3>
+      <p class="muted" style="margin:6px 0 14px">Copies every log line and threat into Elasticsearch, so you can search them and see the ready-made dashboard in Kibana, or feed a SOC's own SIEM. The monitor keeps working the same way whether this is on or off.</p>
+      <div class="fw-row">
+        <label class="toggle"><input type="checkbox" id="elkToggle" ${r.on ? "checked" : ""}> <span>Send to Elasticsearch</span></label>
+        <input id="elkUrl" class="elk-url" type="url" value="${esc(r.url || "http://127.0.0.1:9200")}" aria-label="Elasticsearch address" ${r.on ? "disabled" : ""}>
+        ${r.on ? `<span class="fw-state ${r.connected ? "ok" : ""}">${state}</span>` : ""}
+      </div>
+      ${r.on && r.connected ? `<p style="margin:12px 0 0"><a class="btn small" href="${esc(r.kibana + r.dashboard)}" target="_blank" rel="noopener">Open the Kibana dashboard</a>
+        <span class="muted small" style="margin-left:8px">Indices ${r.indices.map(esc).join(" and ")}${r.dropped ? `. ${fmt(r.dropped)} older lines were dropped while it was unreachable` : ""}.</span></p>` : ""}
+      <p class="muted small" style="margin:10px 0 0">${r.on ? "Counts are since the monitor started. Each time you switch it on, it first sends every threat so far and the latest 20,000 log lines; resending updates them rather than making copies." : "Not set up yet? Run <code>elk\\setup-windows.ps1</code> once, then <code>elk\\start-windows.ps1</code>. See ELK.md."}</p>
+      ${msg ? `<div class="fw-test bad">${esc(msg)}</div>` : ""}`;
+    $("#elkToggle").addEventListener("change", async (e) => {
+      try {
+        await post("/api/m/elastic", { url: e.target.checked ? $("#elkUrl").value : null });
+        note(e.target.checked ? "Sending to Elasticsearch" : "Stopped sending to Elasticsearch",
+          e.target.checked ? "Threats and log lines will appear in Kibana within a few seconds." : "Nothing more will be sent.");
+        renderElastic();
+      } catch (err) { renderElastic(err.message); }
+    });
   }
 
   async function renderConns() {

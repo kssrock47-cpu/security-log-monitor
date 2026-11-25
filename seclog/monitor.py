@@ -14,7 +14,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
-from . import firewall, formats, insight
+from . import elk, firewall, formats, insight
 from .ai import WindowAI
 from .learning import Learner
 from .parse import make_miner
@@ -119,6 +119,8 @@ class Monitor:
         self._restore_recent()
         row = self.con.execute("select value from memory where key='settings'").fetchone()
         self.settings = {"real_firewall": False, **(json.loads(row[0]) if row else {})}
+        # ELK Stack: send events and alerts to Elasticsearch when switched on (or SECLOG_ELASTIC is set)
+        self.elastic = elk.Shipper(self.settings.get("elastic_url") or os.environ.get("SECLOG_ELASTIC"))
         self._last_expiry = 0
         threading.Thread(target=self._firewall_tidy, daemon=True).start()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -386,6 +388,7 @@ class Monitor:
         if src and src.kind == "simulator":
             src.sim.mark_detected(ent, aid, "AI" if kind == "ai" else "known pattern")
         self._push("alert", self.alert_brief(aid))
+        self._ship_alert(aid)
         return aid
 
     # ---------------------------------------------------------------- background ticks
@@ -440,6 +443,7 @@ class Monitor:
                 self.con.commit()
             for aid in upd:
                 self._push("alert_update", {"id": aid})
+                self._ship_alert(aid)
         if not self.ev_buf:
             return
         buf, self.ev_buf = self.ev_buf, []
@@ -447,6 +451,9 @@ class Monitor:
             self.con.executemany("insert into events values (?,?,?,?,?,?,?,?,?,?,?,?,?)", buf)
             self.con.executemany("insert or replace into templates values (?,?)", list(self.templates.items()))
             self.con.commit()
+        if self.elastic.on:
+            for row in buf:
+                self.elastic.event(row)
 
     # ---------------------------------------------------------------- read side
     def rate(self):
@@ -546,6 +553,7 @@ class Monitor:
             raise KeyError(aid)
         old, kind, rule, ent, feats, title = r[0]
         self._exec("update alerts set status=? where id=?", (status, aid))
+        self._ship_alert(aid)
         if status != "new":  # a person has dealt with it: the next attack gets a fresh alert
             for k in [k for k, v in self.rule_open.items() if v and v[0] == aid]:
                 del self.rule_open[k]
@@ -849,6 +857,51 @@ class Monitor:
         gone = not firewall.exists(ip)
         steps.append({"step": "Remove the rule again", "ok": gone, "detail": ""})
         return {"ok": ok and found and gone, "steps": steps}
+
+    # ---------------------------------------------------------------- ELK Stack (Elasticsearch + Kibana)
+    def _alert_row(self, aid):
+        with self.dbl:
+            cur = self.con.execute("select * from alerts where id=?", (aid,))
+            row = cur.fetchone()
+            return dict(zip([c[0] for c in cur.description], row)) if row else None
+
+    def _ship_alert(self, aid):
+        if self.elastic.on:
+            a = self._alert_row(aid)
+            if a:
+                self.elastic.alert(a)
+
+    def elastic_view(self):
+        return {**self.elastic.status(), "kibana": os.environ.get("SECLOG_KIBANA", "http://127.0.0.1:5601"),
+                "dashboard": "/app/dashboards#/view/seclog-overview"}
+
+    def set_elastic(self, url, backfill_events=20000):
+        """Switch sending on (url) or off (None). On: also sends every alert so far and the latest log lines."""
+        self.elastic.configure(url)
+        self.settings["elastic_url"] = self.elastic.url
+        self._exec("insert or replace into memory values ('settings', ?)", (json.dumps(self.settings),))
+        if self.elastic.on:
+            self._flush_events()
+            rows = self._rows("select * from (select * from events order by id desc limit ?) order by id", (backfill_events,))
+            for r in rows:
+                self.elastic.event(r)
+            with self.dbl:
+                cur = self.con.execute("select * from alerts order by id")
+                cols = [c[0] for c in cur.description]
+                alerts = [dict(zip(cols, r)) for r in cur.fetchall()]
+            for a in alerts:
+                self.elastic.alert(a)
+        return self.elastic_view()
+
+    def elastic_test(self):
+        if not self.elastic.on:
+            raise ValueError("Switch sending on first.")
+        try:
+            self.elastic.check()
+        except Exception as e:
+            self.elastic.last_error = self.elastic._why(e)
+            raise ConnectionError(self.elastic.last_error)
+        return self.elastic_view()
 
     def block_list(self):
         now = time.time()

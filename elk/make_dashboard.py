@@ -1,0 +1,168 @@
+"""Writes elk/kibana-dashboard.ndjson: the Kibana data views, charts and dashboard for the monitor's data.
+
+    python elk/make_dashboard.py
+
+Import it in Kibana (Stack Management > Saved objects > Import), or let elk/start-windows.ps1 do it.
+The charts are Kibana's aggregation-based visualizations, built on the ECS fields that seclog/elk.py sends.
+"""
+import json
+import os
+
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kibana-dashboard.ndjson")
+EV, AL = "seclog-events", "seclog-alerts"
+REF = "kibanaSavedObjectMeta.searchSourceJSON.index"
+SEV_COLORS = {"critical": "#BD271E", "high": "#E7664C", "medium": "#D6BF57", "low": "#54B399"}
+
+
+def search_source(query=""):
+    return json.dumps({"query": {"query": query, "language": "kuery"}, "filter": [], "indexRefName": REF})
+
+
+def vis(vid, title, view, vtype, params, aggs, query="", ui=None, desc=""):
+    return {"type": "visualization", "id": vid, "attributes": {
+        "title": title, "description": desc, "version": 1,
+        "visState": json.dumps({"title": title, "type": vtype, "params": params, "aggs": aggs}),
+        "uiStateJSON": json.dumps(ui or {}),
+        "kibanaSavedObjectMeta": {"searchSourceJSON": search_source(query)}},
+        "references": [{"name": REF, "type": "index-pattern", "id": view}]}
+
+
+def count():
+    return {"id": "1", "enabled": True, "type": "count", "params": {}, "schema": "metric"}
+
+
+def terms(aid, field, schema, size=10, label=None):
+    p = {"field": field, "orderBy": "1", "order": "desc", "size": size, "otherBucket": False, "missingBucket": False}
+    if label:
+        p["customLabel"] = label
+    return {"id": aid, "enabled": True, "type": "terms", "params": p, "schema": schema}
+
+
+def over_time(aid="2"):
+    return {"id": aid, "enabled": True, "type": "date_histogram", "schema": "segment",
+            "params": {"field": "@timestamp", "useNormalizedEsInterval": True, "interval": "auto",
+                       "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}}
+
+
+def bars(title_y, horizontal=False):
+    cat_pos, val_pos = ("left", "bottom") if horizontal else ("bottom", "left")
+    cat_labels = {"show": True, "rotate": 0, "filter": False, "truncate": 200} if horizontal else \
+        {"show": True, "filter": True, "truncate": 100}
+    return {"type": "histogram", "grid": {"categoryLines": False},
+            "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": cat_pos, "show": True, "style": {},
+                              "scale": {"type": "linear"}, "labels": cat_labels,
+                              "title": {}}],
+            "valueAxes": [{"id": "ValueAxis-1", "name": "LeftAxis-1", "type": "value", "position": val_pos, "show": True,
+                           "style": {}, "scale": {"type": "linear", "mode": "normal"},
+                           "labels": {"show": True, "rotate": 0, "filter": False, "truncate": 100},
+                           "title": {"text": title_y}}],
+            "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                              "data": {"label": title_y, "id": "1"}, "valueAxis": "ValueAxis-1",
+                              "drawLinesBetweenPoints": True, "lineWidth": 2, "showCircles": True}],
+            "addTooltip": True, "addLegend": True, "legendPosition": "right", "times": [], "addTimeMarker": False,
+            "labels": {"show": False}, "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full",
+                                                          "color": "#E7664C"},
+            "detailedTooltip": True, "palette": {"type": "palette", "name": "default"}, "isVis": True}
+
+
+def pie():
+    return {"type": "pie", "addTooltip": True, "addLegend": True, "legendDisplay": "show", "legendSize": "large", "legendPosition": "right", "isDonut": True,
+            "labels": {"show": True, "values": True, "last_level": True, "truncate": 100},
+            "palette": {"type": "palette", "name": "default"}, "distinctColors": True}
+
+
+def table(per_page=10):
+    return {"perPage": per_page, "showPartialRows": False, "showMetricsAtAllLevels": False, "showTotal": False,
+            "totalFunc": "sum", "percentageCol": "", "autoFitRowToContent": False}
+
+
+def metric(label):
+    return {"addTooltip": True, "addLegend": False, "type": "metric",
+            "metric": {"percentageMode": False, "useRanges": False, "colorSchema": "Green to Red",
+                       "metricColorMode": "None", "colorsRange": [{"from": 0, "to": 10000}],
+                       "labels": {"show": True}, "invertColors": False,
+                       "style": {"bgFill": "#000", "bgColor": False, "labelColor": False, "subText": "", "fontSize": 36}}}
+
+
+def metric_aggs(label):
+    return [{"id": "1", "enabled": True, "type": "count", "params": {"customLabel": label}, "schema": "metric"}]
+
+
+def build():
+    objs = [
+        {"type": "index-pattern", "id": EV, "attributes": {"title": EV + "*", "name": "Security Log Monitor: log events",
+                                                           "timeFieldName": "@timestamp"}, "references": []},
+        {"type": "index-pattern", "id": AL, "attributes": {"title": AL + "*", "name": "Security Log Monitor: alerts",
+                                                           "timeFieldName": "@timestamp"}, "references": []},
+    ]
+    sev_ui = {"vis": {"colors": SEV_COLORS}}
+    v = [
+        vis("seclog-intro", "About this dashboard", AL, "markdown",
+            {"markdown": "**Security Log Monitor** sends every log line it reads and every threat it raises here. "
+                         "Fields follow the Elastic Common Schema, so the same data also works in Elastic Security.\n\n"
+                         "Showing the last 24 hours. Checked an older log file? Widen the time range at the top right.",
+             "fontSize": 12, "openLinksInNewTab": False}, []),
+        vis("seclog-n-alerts", "Threats raised", AL, "metric", metric("Threats raised"), metric_aggs("Threats raised")),
+        vis("seclog-n-events", "Log lines read", EV, "metric", metric("Log lines read"), metric_aggs("Log lines read")),
+        vis("seclog-n-fails", "Failed logins", EV, "metric", metric("Failed logins"), metric_aggs("Failed logins"),
+            query="event.outcome:failure"),
+        vis("seclog-alerts-time", "Threats over time, by severity", AL, "histogram", bars("Threats"),
+            [count(), over_time(), terms("3", "labels.severity", "group", 4, "Severity")], ui=sev_ui),
+        vis("seclog-events-time", "Log lines over time, by outcome", EV, "histogram", bars("Log lines"),
+            [count(), over_time(), terms("3", "event.outcome", "group", 3, "Outcome")],
+            ui={"vis": {"colors": {"failure": "#E7664C", "success": "#54B399", "unknown": "#D3DAE6"}}}),
+        vis("seclog-tactics", "Threats by MITRE ATT&CK tactic", AL, "pie", pie(),
+            [count(), terms("2", "threat.tactic.name", "segment", 7, "Tactic")]),
+        vis("seclog-ai-vs-rules", "Who caught it: the AI or a known pattern", AL, "pie", pie(),
+            [count(), terms("2", "rule.category", "segment", 2, "Caught by")]),
+        vis("seclog-attackers", "Most active attackers", AL, "table", table(),
+            [count(), terms("2", "source.ip", "bucket", 15, "Address"),
+             terms("3", "source.geo.country_name", "bucket", 1, "Country")], query="source.ip:*"),
+        vis("seclog-techniques", "Attack techniques seen", AL, "table", table(),
+            [count(), terms("2", "threat.technique.id", "bucket", 15, "MITRE technique"),
+             terms("3", "rule.name", "bucket", 1, "Threat")]),
+        vis("seclog-users", "Accounts targeted by failed logins", EV, "table", table(),
+            [count(), terms("2", "user.name", "bucket", 15, "Account")], query="event.outcome:failure"),
+        vis("seclog-countries", "Failed logins by country", EV, "horizontal_bar", bars("Failed logins", horizontal=True),
+            [count(), terms("2", "source.geo.country_name", "segment", 10, "Country")], query="event.outcome:failure"),
+    ]
+    search = {"type": "search", "id": "seclog-latest-alerts", "attributes": {
+        "title": "Latest threats", "description": "",
+        "columns": ["rule.name", "labels.severity", "source.ip", "user.name", "threat.technique.id",
+                    "labels.attack_step", "labels.status", "labels.count"],
+        "sort": [["@timestamp", "desc"]],
+        "kibanaSavedObjectMeta": {"searchSourceJSON": search_source()}},
+        "references": [{"name": REF, "type": "index-pattern", "id": AL}]}
+    layout = [  # (object id, type, x, y, w, h)
+        ("seclog-intro", "visualization", 0, 0, 18, 8), ("seclog-n-alerts", "visualization", 18, 0, 10, 8),
+        ("seclog-n-events", "visualization", 28, 0, 10, 8), ("seclog-n-fails", "visualization", 38, 0, 10, 8),
+        ("seclog-alerts-time", "visualization", 0, 8, 24, 13), ("seclog-events-time", "visualization", 24, 8, 24, 13),
+        ("seclog-tactics", "visualization", 0, 21, 16, 14), ("seclog-ai-vs-rules", "visualization", 16, 21, 14, 14),
+        ("seclog-countries", "visualization", 30, 21, 18, 14),
+        ("seclog-attackers", "visualization", 0, 35, 16, 15), ("seclog-techniques", "visualization", 16, 35, 18, 15),
+        ("seclog-users", "visualization", 34, 35, 14, 15),
+        ("seclog-latest-alerts", "search", 0, 50, 48, 16),
+    ]
+    panels, refs = [], []
+    for i, (oid, otype, x, y, w, h) in enumerate(layout, 1):
+        panels.append({"version": "8.19.26", "type": otype, "gridData": {"x": x, "y": y, "w": w, "h": h, "i": str(i)},
+                       "panelIndex": str(i), "embeddableConfig": {"enhancements": {}}, "panelRefName": f"panel_{i}"})
+        refs.append({"name": f"panel_{i}", "type": otype, "id": oid})
+    dash = {"type": "dashboard", "id": "seclog-overview", "attributes": {
+        "title": "Security Log Monitor: threat overview",
+        "description": "Log events and threats from the AI-Based Security Log Analysis and Threat Monitoring System",
+        "panelsJSON": json.dumps(panels), "version": 1,
+        "optionsJSON": json.dumps({"useMargins": True, "syncColors": False, "syncCursor": True, "syncTooltips": False,
+                                   "hidePanelTitles": False}),
+        "timeRestore": True, "timeFrom": "now-24h", "timeTo": "now",
+        "refreshInterval": {"pause": False, "value": 10000},
+        "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []})}},
+        "references": refs}
+    return objs + v + [search, dash]
+
+
+if __name__ == "__main__":
+    with open(OUT, "w", newline="\n") as f:
+        for o in build():
+            f.write(json.dumps(o) + "\n")
+    print(f"Wrote {OUT}")
