@@ -424,6 +424,7 @@
           <span class="chip ${ai ? "ai" : "pattern"}">${ai ? "Spotted by the AI" : "Known attack pattern"}</span>
           ${d.learned ? '<span class="chip learned">Learned from you</span>' : ""}
           ${techChip(d.mitre || "")}
+          <button class="btn small ai-ask" type="button" style="margin-left:auto" data-ai-ask="Explain threat #${d.id} in plain words: what happened, how serious it is, and what I should do now.">Ask the AI to explain</button>
         </div>
         <h2>${esc(d.title)}</h2>
         <div class="facts">

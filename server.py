@@ -5,6 +5,7 @@ Run:  python server.py        (then open http://localhost:8600)
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -19,7 +20,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from seclog import insight, pipeline, plain, report, snapshot
+from seclog import arena, assistant, insight, pipeline, plain, report, snapshot
 from seclog.live import LiveEngine
 from seclog.monitor import Monitor
 from seclog.simulator import ATTACKS
@@ -793,6 +794,201 @@ def m_lab_attack(a: Attack):
         return sim.sim.launch(a.kind)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ---------------------------------------------------------------- algorithm arena
+ARENA = arena.Arena()
+
+
+def _arena_ds(ds):
+    avail = [d["id"] for d in arena.datasets()]
+    if ds and ds in avail:
+        return ds
+    return avail[0] if avail else None
+
+
+@app.get("/api/arena")
+def arena_view(dataset: str | None = None):
+    ds = _arena_ds(dataset)
+    out = {"datasets": arena.datasets(), "dataset": ds, **ARENA.catalog()}
+    out.update(ARENA.view(ds) if ds else {"contenders": [], "job": ARENA.job_view(), "recommendation": None})
+    return out
+
+
+@app.get("/api/arena/contenders/{cid}")
+def arena_detail(cid: str, dataset: str | None = None):
+    try:
+        return ARENA.detail(cid, _arena_ds(dataset))
+    except KeyError:
+        raise HTTPException(404, "No such contender.")
+
+
+class ContenderReq(BaseModel):
+    algo: str | None = None
+    name: str | None = None
+    params: dict | None = None
+
+
+@app.post("/api/arena/contenders")
+def arena_add(c: ContenderReq):
+    if not c.algo:
+        raise HTTPException(400, "Pick an algorithm.")
+    try:
+        return ARENA.add(c.algo, c.name, c.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/arena/contenders/{cid}")
+def arena_update(cid: str, c: ContenderReq):
+    try:
+        return ARENA.update(cid, c.name, c.params)
+    except KeyError:
+        raise HTTPException(404, "No such contender.")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/arena/contenders/{cid}/duplicate")
+def arena_duplicate(cid: str):
+    try:
+        return ARENA.duplicate(cid)
+    except KeyError:
+        raise HTTPException(404, "No such contender.")
+
+
+@app.delete("/api/arena/contenders/{cid}")
+def arena_delete(cid: str):
+    try:
+        ARENA.delete(cid)
+    except KeyError:
+        raise HTTPException(404, "No such contender.")
+    return {"ok": True}
+
+
+class FightReq(BaseModel):
+    ids: list[str] = []
+    dataset: str | None = None
+    trials: int = 12
+
+
+@app.post("/api/arena/fight")
+def arena_fight(f: FightReq):
+    try:
+        ARENA.fight(f.ids, _arena_ds(f.dataset))
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(409, str(e))
+    return ARENA.job_view()
+
+
+@app.post("/api/arena/contenders/{cid}/tune")
+def arena_tune(cid: str, f: FightReq):
+    try:
+        ARENA.tune_job(cid, _arena_ds(f.dataset), f.trials)
+    except KeyError:
+        raise HTTPException(404, "No such contender.")
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(409, str(e))
+    return ARENA.job_view()
+
+
+@app.get("/api/arena/job")
+def arena_job():
+    return ARENA.job_view()
+
+
+@app.post("/api/arena/stop")
+def arena_stop():
+    ARENA.stop()
+    return ARENA.job_view()
+
+
+@app.post("/api/arena/reset")
+def arena_reset():
+    try:
+        ARENA.reset()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- AI assistant (local LLM through Ollama)
+@app.get("/api/assistant/status")
+def assistant_status():
+    return assistant.status()
+
+
+class ModelReq(BaseModel):
+    model: str
+
+
+@app.post("/api/assistant/model")
+def assistant_model(m: ModelReq):
+    assistant.save_settings(model=m.model)
+    return assistant.status()
+
+
+@app.post("/api/assistant/pull")
+def assistant_pull(m: ModelReq):
+    def gen():
+        try:
+            for d in assistant.pull(m.model):
+                yield f"data: {json.dumps({k: d.get(k) for k in ('status', 'total', 'completed')})}\n\n"
+            assistant.save_settings(model=m.model)
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e) or 'Ollama is not running.'})}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+class AskReq(BaseModel):
+    question: str
+    history: list[dict] = []
+    page: dict = {}
+
+
+def _assistant_facts(question, page):
+    parts = []
+    try:
+        parts += assistant.facts_monitor(MON, question, page)
+    except Exception as e:
+        parts.append(f"(live monitor facts unavailable: {e})")
+    name = page.get("page") or ""
+    want_arena = name == "arena" or re.search(r"algorithm|arena|model|forest|svm|neural|f1|precision|recall|tun|best", question, re.I)
+    if want_arena:
+        ds = _arena_ds(page.get("dataset"))
+        if ds:
+            parts += assistant.facts_arena({**ARENA.view(ds), "dataset": ds})
+    if name in ("accuracy", "research", "alerts", "how") or want_arena:
+        try:
+            if has_data():
+                parts += assistant.facts_research(accuracy())
+        except Exception:
+            pass
+    return assistant.build_facts(parts)
+
+
+@app.post("/api/assistant/chat")
+def assistant_chat(a: AskReq):
+    st = assistant.status()
+    if not st["running"]:
+        raise HTTPException(503, "The AI model isn't running on this PC. Start Ollama, then try again.")
+    if not st["model"]:
+        raise HTTPException(503, "No AI model is downloaded yet. Download one in the assistant's settings.")
+    q = (a.question or "").strip()[:2000]
+    if not q:
+        raise HTTPException(400, "Ask a question.")
+
+    def gen():
+        try:
+            facts = _assistant_facts(q, a.page or {})
+            yield f"data: {json.dumps({'model': st['model'], 'facts': facts})}\n\n"
+            for piece in assistant.chat(st["model"], assistant.messages_for(q, a.history, facts)):
+                yield f"data: {json.dumps({'t': piece})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e) or 'The AI model stopped answering.'})}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def main():

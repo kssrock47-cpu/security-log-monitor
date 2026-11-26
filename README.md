@@ -36,6 +36,8 @@ It takes security logs from anywhere, watches them live or checks them offline, 
 * **Guided demo:** a 23-step tour that explains every screen and runs the whole story live (about 6 minutes). Tick "Start fresh" to clear old threats and lessons first.
 * **Attack lab:** a pretend company network in Malaysia with 9 attacks to launch, timed to show how fast each one is caught. "Quiet data theft" matches no known pattern, so only the AI can catch it. "Sneaky data theft" gets through until you teach the AI. The AI learning page shows a before and after chart.
 
+* **AI assistant:** a chat panel on every page (**Ask the AI**, bottom right) and an **Ask the AI to explain** button on every threat. It runs a large language model on this PC through [Ollama](https://ollama.com), so no log line leaves the computer, and it answers only from the monitor's own data: the threats, their evidence lines, address profiles, attack stories, the arena results and the HDFS_v1 results (retrieval-augmented generation). **Show what the AI was given** lists exactly those facts under each answer. Setup: install Ollama, then pick a model in the panel (qwen2.5:7b, 4.7 GB, or qwen2.5:3b, 1.9 GB, for PCs without a graphics card).
+
 **2. Research on HDFS_v1 (the FYP evaluation)**
 The full benchmark run on 11,175,629 real log lines: Drain3 parsing, Random Forest and Isolation Forest with a time-ordered split, accuracy against the official answer key, and a replay of the newer logs. Results are below.
 
@@ -127,6 +129,19 @@ Live mode on the same data (first 20,000 newer tasks replayed): checking a task 
 
 Message sorting: Drain3 with masking and similarity 0.9 found 53 message types. On loghub's labelled HDFS_2k sample it groups 99.75% of lines correctly.
 
+### Algorithm arena
+
+The **Algorithm arena** page lets algorithms fight on the same HDFS_v1 tasks (older 70% to learn, newer 30% to test) and shows how each one performs, its settings and how they compare:
+
+* **15 algorithms** to pick from. From examples: Logistic Regression, Decision Tree, Random Forest, Extra Trees, Gradient Boosting, Linear SVM, k-Nearest Neighbours, Naive Bayes, AdaBoost. Normal only: Isolation Forest, PCA, One-Class SVM, Local Outlier Factor. Deep learning: a Neural Network (multi-layer perceptron) and an Autoencoder.
+* **Add, change, copy or delete** any of them. Every setting (parameter) has a form field with its range, default and meaning. Results from older settings are marked out of date.
+* **Fight:** tick any contenders and run them; each lane fills in as it finishes. The leaderboard ranks them by F1 and shows caught, false alarms, precision, recall, time and every setting. Charts compare precision, recall and F1, quality against speed, and the precision-recall curves.
+* **Each algorithm's page:** caught, missed and false alarms as dots and a confusion matrix, precision, recall, F1, PR-AUC, ROC-AUC, timings, its precision-recall curve, and a table of its settings next to the defaults.
+* **AI tuning:** the AI searches for better settings (random search). Each try learns on the older 80% of the training tasks and is scored on the newest 20% of them; the best is then tested once on the newer test tasks, so the test set never influences the choice. The trials are shown and kept.
+* **The AI's pick** names the best algorithm, the best one that needs no answer key, and the fastest near-best one. **Ask the AI about these results** sends the whole leaderboard to the assistant.
+
+The HDFS_v1 features (every task's message counts) are made once from a full run: `python -m seclog.arena build-features` (or with `--log HDFS.log --labels anomaly_label.csv` if the full database is gone). They are saved to `data/research/hdfs_features.npz`, which comes with the project. Without it, the arena uses the current research run (for example the demo logs). `python -m seclog.arena fight` runs every contender from the command line.
+
 ## Tested on real-world logs
 
 `python -m seclog.evaluate ssh <SSH.log>` runs a whole log through the monitor in its own throwaway database and writes `data/eval/ssh.json`.
@@ -194,7 +209,7 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
 ## Not built yet (planned for FYP2)
 
 * A second dataset (BGL), and comparing against published results
-* A deep sequence model (for example LSTM)
+* A deep sequence model (for example LSTM); the arena already has a neural network and an autoencoder
 * Deeper per-alert explanations (SHAP)
 * A supervised model trained on many confirmed threats, building on today's feedback loop
 * More automatic response: firewall rules on Linux (iptables), and alerts to Telegram or email
@@ -213,6 +228,8 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
     seclog/formats.py    reads many log formats into one shape
     seclog/rules.py      23 known attack patterns (MITRE ATT&CK)
     seclog/compare.py    eight machine-learning techniques compared on HDFS_v1
+    seclog/arena.py      algorithm arena: 15 algorithms, editable settings, fights, AI tuning
+    seclog/assistant.py  AI assistant: local language model (Ollama), grounded in the monitor's data
     seclog/evaluate.py   evaluation on real and labelled datasets (loghub SSH, LANL, AIT-LDS)
     seclog/ai.py         live AI: per-address windows, Isolation Forest, plain reasons
     seclog/learning.py   learning from people's answers (feedback loop)
@@ -232,7 +249,9 @@ The simple "new place" signal finds most of the red team but is far too noisy fo
     web/insight.js       attack story, map, profiles, blocking, presentation mode
     web/world.js         world map shapes (Natural Earth, public domain)
     web/tour.js          the guided demo
-    tests/               46 tests (python -m pytest)
+    web/arena.js         the algorithm arena page
+    web/assistant.js     the AI assistant panel
+    tests/               52 tests (python -m pytest)
 
 ## Credits
 

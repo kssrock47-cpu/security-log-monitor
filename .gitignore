@@ -16,3 +16,6 @@ data/research/*.log
 
 data/eval/*/
 data/eval/*.txt
+data/arena/
+data/assistant.json
+data/arena_build.*

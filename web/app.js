@@ -537,7 +537,8 @@ function compareHtml(c) {
     <p class="muted" style="margin:6px 0 0">The project brief asks for existing machine-learning techniques to be compared. These are the eight from the standard log anomaly benchmark (He et al., 2016), each run on the same ${fmt(c.results[0].n_train + c.results[0].n_test)} HDFS_v1 tasks: learning from the older ${fmt(c.results[0].n_train)}, tested on the newer ${fmt(c.results[0].n_test)}. The bar is the F1 score, which balances catching problems against raising false alarms (1.0 is perfect).</p>
     ${group("supervised", "Learned from examples marked normal or problem", "Needs a past record of which tasks were problems.")}
     ${group("unsupervised", "Learned only what normal looks like", "Needs no answer key, so it also works on logs nobody has labelled. Each raises an alert for anything more unusual than the 3% most unusual older tasks.")}
-    <p class="muted small" style="margin-top:16px">Rerun with <code>python -m seclog.compare</code>. Last run ${esc((c.run_at || "").replace("T", " "))}.</p>
+    <p style="margin-top:16px"><a class="btn small" href="#/arena">Open the algorithm arena</a> <span class="muted small">to change any algorithm's settings, add more algorithms (including neural networks) or let the AI tune them.</span></p>
+    <p class="muted small" style="margin-top:10px">Rerun with <code>python -m seclog.compare</code>. Last run ${esc((c.run_at || "").replace("T", " "))}.</p>
   </section>`;
 }
 
